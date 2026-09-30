@@ -6,14 +6,6 @@ K-tools identifies k-mer signatures in transcript populations and individual RNA
 
 **[Documentation](docs/Documentation.md) · [Tutorial](docs/Tutorial.md) · [FAQs](docs/FAQs.md) · [Benchmarks](docs/Benchmarks.md) · [Methodology](docs/Methodology.md) · [Wiki](https://github.com/AngeloDAngelo/Ktools/wiki)**
 
-![KEA workflow: compare group and transcript frequencies, then intersect selected k-mers](docs/assets/kea-workflow.png)
-
-![KRS workflow: rank each target k-mer against the RNA population](docs/assets/krs-workflow.png)
-
-![K-RBP workflow: compare signature k-mers with experimental RBP score profiles](docs/assets/krbp-workflow.png)
-
-The KRS artwork uses the historical label “KPE” for the downstream step now called K-RBP.
-
 ## Choose a module
 
 | Module | Biological question | Input | Main output |
@@ -44,11 +36,25 @@ Python ≥3.10 is required. `python -m pip install .` installs the runtime libra
 
 ## How the modules work
 
-**KEA** counts overlapping k-mers in reference and control RNA populations. It combines a population-level frequency comparison with a statistical comparison of normalized transcript frequencies. Intersecting their selected lists yields a signature supported by both analyses.
+### KEA
 
-**KRS** uses the combined RNA population to rank each k-mer's frequency in a target transcript against its nonzero frequencies in other transcripts. The chosen upper percentile defines the target's signature; background composition and the percentile threshold determine its interpretation.
+KEA counts overlapping k-mers in reference and control RNA populations. It combines a population-level frequency comparison with a statistical comparison of normalized transcript frequencies. Intersecting their selected lists yields a signature supported by both analyses.
 
-**K-RBP** compares scores for signature k-mers against background k-mers in each RBP profile. Longer signature elements can be decomposed into shorter matrix k-mers. The output includes association statistics, multiple-testing corrections and effect sizes. These associations nominate candidate proteins; they are not direct binding measurements for the target RNA.
+![KEA workflow: compare group and transcript frequencies, then intersect selected k-mers](docs/assets/kea-workflow.png)
+
+### KRS
+
+KRS uses the combined RNA population to rank each k-mer's frequency in a target transcript against its nonzero frequencies in other transcripts. The chosen upper percentile defines the target's signature; background composition and the percentile threshold determine its interpretation.
+
+![KRS workflow: rank each target k-mer against the RNA population](docs/assets/krs-workflow.png)
+
+The KRS artwork uses the historical label “KPE” for the downstream step now called K-RBP.
+
+### K-RBP
+
+K-RBP compares scores for signature k-mers against background k-mers in each RBP profile. Longer signature elements can be decomposed into shorter matrix k-mers. The output includes association statistics, multiple-testing corrections and effect sizes. These associations nominate candidate proteins; they are not direct binding measurements for the target RNA.
+
+![K-RBP workflow: compare signature k-mers with experimental RBP score profiles](docs/assets/krbp-workflow.png)
 
 See [module parameters](docs/Module-parameters.md), [methodology](docs/Methodology.md) and the [simulated tutorial](docs/Tutorial.md). Place experimental PEKA matrices in [data/peka](data/peka/README.md).
 
