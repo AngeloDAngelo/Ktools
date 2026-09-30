@@ -4,7 +4,7 @@
 
 K-tools identifies k-mer signatures in transcript populations and individual RNAs, then associates those signatures with experimentally derived RNA-binding protein (RBP) profiles. It works with transcript-oriented sequences and does not require preselected binding regions.
 
-**[Documentation](docs/Documentation.md) · [Tutorial](docs/Tutorial.md) · [FAQs](docs/FAQs.md) · [Benchmarks](docs/Benchmarks.md) · [Methodology](docs/Methodology.md)**
+**[Documentation](docs/Documentation.md) · [Tutorial](docs/Tutorial.md) · [FAQs](docs/FAQs.md) · [Benchmarks](docs/Benchmarks.md) · [Methodology](docs/Methodology.md) · [Wiki](https://github.com/AngeloDAngelo/Ktools/wiki)**
 
 ![KEA workflow: compare group and transcript frequencies, then intersect selected k-mers](docs/assets/kea-workflow.png)
 
