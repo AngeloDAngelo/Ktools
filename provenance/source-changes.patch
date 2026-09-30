@@ -1,0 +1,45 @@
+--- supplied/KEA.py
++++ repository/KEA.py
+@@ -31,6 +31,7 @@
+ from wordcloud import WordCloud
+ import matplotlib as mpl
+ import matplotlib.font_manager as fm
++from matplotlib_venn import venn2, venn3
+ 
+ def LocalizeRangeInTx(table,annotation_file,tx_id_column,start_col,end_col):
+     
+@@ -603,7 +604,7 @@
+     if all_kmers_df is not None and not isinstance(all_kmers_df, pd.DataFrame):
+         all_kmers_df = pd.DataFrame(all_kmers_df)
+ 
+-    kmers = [seq[i:i+k] for i in range(0, len(seq)-k)]
++    kmers = [seq[i:i+k] for i in range(0, len(seq)-k+1)]
+     uniq, counts = np.unique(kmers, return_counts=True)
+     conte_kmers = pd.DataFrame({0: uniq, 1: counts})
+ 
+@@ -2302,7 +2303,7 @@
+         # 3. VALIDATE KMERS AGAINST DF INDEX
+         # ----------------------------------------------------------------
+         index_kmers = set(df_zscore.index)
+-        kmers_valid = list(set(kmers).intersection(index_kmers))
++        kmers_valid = sorted(set(kmers).intersection(index_kmers))
+         n_missing = len(set(kmers)) - len(kmers_valid)
+     
+        
+@@ -2315,7 +2316,7 @@
+         # NEW: VALIDATE bg_kmers
+         # ----------------------------------------------------------------
+         if bg_kmers is not None:
+-            bg_kmers_valid = list(set(bg_kmers).intersection(index_kmers))
++            bg_kmers_valid = sorted(set(bg_kmers).intersection(index_kmers))
+             print(f"[KEA] Custom bg_kmers: {len(bg_kmers)} total | {len(bg_kmers_valid)} found")
+             if len(bg_kmers_valid) == 0:
+                 raise ValueError("None of the provided bg_kmers are present in df_zscore index.")
+@@ -2328,7 +2329,7 @@
+         if mode == "continuous":
+     
+             if bg_kmers_valid is None:
+-                background_kmers = list(index_kmers - set(kmers_valid))
++                background_kmers = sorted(index_kmers - set(kmers_valid))
+             else:
+                 background_kmers = bg_kmers_valid

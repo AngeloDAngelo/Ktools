@@ -1,0 +1,15 @@
+analysis	method	metric	value	precision	source
+synthetic_unbiased	KEA	mean_NCC	0.88	approximate	draft Results
+synthetic_unbiased	HOMER	mean_NCC	0.65	approximate	draft Results
+synthetic_length_bias	KEA	mean_NCC	0.88	approximate	draft Results
+synthetic_length_bias	HOMER	mean_NCC	0.74	approximate	draft Results
+synthetic_number_bias	KEA	mean_NCC	0.88	approximate	draft Results
+synthetic_number_bias	HOMER	mean_NCC	0.65	approximate	draft Results
+synthetic_region_bias	KEA	mean_NCC	0.92	approximate	draft Results
+synthetic_region_bias	HOMER	mean_NCC	0.82	approximate	draft Results
+synthetic_gradient	KEA	mean_NCC	0.90	approximate	draft Results
+eCLIP	KEA	median_accuracy	0.57	approximate	draft Results
+eCLIP	HOMER	median_accuracy	0.55	approximate	draft Results
+PEKA_agreement	KEA	significant_positive_RBPs	98	explicit_count	presentation slide 1
+PEKA_agreement	KEA	evaluated_RBPs	112	explicit_count	presentation slide 1
+PEKA_agreement	KEA	percent_significant_positive	87.5	explicit_percentage	presentation slide 1

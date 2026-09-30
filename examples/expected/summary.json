@@ -1,0 +1,16 @@
+{
+  "data": "synthetic demonstration only",
+  "seed_sequences": 42,
+  "seed_kea": 42,
+  "seed_matrix": 123,
+  "k": 3,
+  "reference_transcripts": 24,
+  "control_transcripts": 48,
+  "kea_signature": [
+    "ACG",
+    "CGA",
+    "GAC"
+  ],
+  "krs_size": 8,
+  "rbp_profiles_tested": 3
+}

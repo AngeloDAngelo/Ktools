@@ -1,0 +1,17 @@
+{
+  "sources": [
+    {
+      "filename": "KEA.py",
+      "sha256": "04ff8e31e498fdaf2dfe60454f9e891d4e2d8e7a29495fa7f849f8528522781e"
+    },
+    {
+      "filename": "K_tools_BIOARCHIVE.docx",
+      "sha256": "4ee0ce163ff9419fe17667364025b7c6a9349685e316b285a7197dda72158d9f"
+    },
+    {
+      "filename": "Figures_BIOARCHIVE.pptx",
+      "sha256": "db99a955499b50a0660bfa9ea89d7169b8e51f712c5fc7719c11e0c08cc1f8ce"
+    }
+  ],
+  "note": "Manuscript and presentation used as documentation sources; unpublished draft originals are not redistributed in this repository."
+}
