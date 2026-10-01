@@ -15,6 +15,7 @@ K-tools identifies k-mer signatures in transcript populations and individual RNA
 | **K-RBP** — K-mer RBP association | Which RBP profiles favor the signature? | Signature and k-mer × RBP score matrix | Association statistics and candidate proteins |
 | **Kmap** — Transcript profile comparison | Which RNAs have similar k-mer profiles? | Query and candidate transcript profiles | Ranked similarities and Sankey-style alignment |
 | **Domain enrichment** | Where do selected CDS k-mer occurrences overlap UniProt features? | Full-transcript FASTAs, matching GTF and UniProt BED tracks | Occurrence-level enrichment statistics and heatmap |
+| **miRNA seed annotation** | Which miRNA families have seed matches in the signature? | Selected 7-mers and miRNA family table | Exact target seed annotations and KEA/KRS score plots |
 
 These analyses are exposed through the Python `KEA` class. Positional profiling can further locate signature elements along a transcript.
 
@@ -66,6 +67,10 @@ Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmer
 ### CDS domain enrichment
 
 `DomainEnrichment` tests overlap of selected CDS k-mer occurrences with UniProt genomic features using reference/control or shuffled-position backgrounds. Matching full-transcript FASTAs, GTF and BED resources are required. See [parameters, inputs and interpretation](docs/Domain-enrichment.md).
+
+### miRNA seed annotation
+
+`AnnotateMiRNASeeds` matches selected RNA 7-mers to reverse-complemented miRNA seeds and retains their KEA/KRS scores. See [parameters and orientation](docs/MiRNA-seeds.md) and the [CDR1as/miR-7 example](docs/CDR1as-miRNA-example.md).
 
 See [module parameters](docs/Module-parameters.md), [methodology](docs/Methodology.md) and the [simulated tutorial](docs/Tutorial.md). Place experimental PEKA matrices in [data/peka](data/peka/README.md).
 

@@ -1,0 +1,33 @@
+{
+  "circbase_record": "https://www.circbase.org/cgi-bin/singlerecord.cgi?id=hsa_circ_0001946",
+  "original_assembly": "GRCh37/hg19",
+  "original_bed_interval": "chrX:139865339-139866824:+",
+  "mapped_assembly": "GRCh38",
+  "mapped_1based_interval": "X:140783175-140784659:+",
+  "mapping_response": {
+    "mappings": [
+      {
+        "mapped": {
+          "strand": 1,
+          "end": 140784659,
+          "start": 140783175,
+          "coord_system": "chromosome",
+          "assembly": "GRCh38",
+          "seq_region_name": "X"
+        },
+        "original": {
+          "end": 139866824,
+          "strand": 1,
+          "start": 139865340,
+          "coord_system": "chromosome",
+          "seq_region_name": "X",
+          "assembly": "GRCh37"
+        }
+      }
+    ]
+  },
+  "sequence_source": "https://rest.ensembl.org/sequence/region/human/X:140783175..140784659:1",
+  "sequence_sha256": "4f5a5f8c87801d788b6795c298edb053aeef225d3337f475e3473e60d8b7d294",
+  "length": 1485,
+  "note": "GRCh38 genomic extraction from mapped circBase boundaries, not an Ensembl 99 linear transcript accession. Background annotation release is author-provided; FASTA headers alone do not verify release."
+}

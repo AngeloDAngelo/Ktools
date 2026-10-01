@@ -79,3 +79,7 @@ Rank candidate transcripts against a query using complete normalized k-mer profi
 ### CDS domain enrichment
 
 Test selected CDS occurrence overlaps with UniProt genomic features using control transcripts or a shuffled-position null. Inputs, frame filtering, QC and statistical interpretation are described in [Domain enrichment](Domain-enrichment.md).
+
+## miRNA seed annotation
+
+[miRNA family annotation: orientation, parameters, scores and plots](MiRNA-seeds.md) · [CDR1as worked example](CDR1as-miRNA-example.md)

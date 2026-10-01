@@ -1,0 +1,9 @@
+{
+  "source": "Author-supplied miR_Family_Info.txt",
+  "original_sha256": "1d8ca5bf384be4e82c39c4b1d0d21762ecc2bb3f38198413c61d61882308f2fc",
+  "filter": "Species ID == 9606",
+  "rows": 2606,
+  "families": 2064,
+  "seed_matches_mature_positions_2_8": 2606,
+  "database_release": "Not provided; confirm before attributing a specific release"
+}

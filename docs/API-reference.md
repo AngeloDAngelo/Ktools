@@ -134,3 +134,7 @@ plot_kmer_rank_alignment(self, ref_tx, ctrl_tx,
 ```
 
 See [Kmap](Kmap.md) for metric definitions, cached external FASTAs, ranked output and Sankey-style visualization.
+
+## miRNA seed annotation
+
+[miRNA family annotation: orientation, parameters, scores and plots](MiRNA-seeds.md) · [CDR1as worked example](CDR1as-miRNA-example.md)

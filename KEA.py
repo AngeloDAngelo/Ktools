@@ -1628,6 +1628,129 @@ class KEA():
         plt.close()
 
 
+    def AnnotateMiRNASeeds(
+        self, family_file, kmers=None, source="KEA", reference=None,
+        species=None, species_id=9606, plot=True, top_n=20, output_dir=None,
+    ):
+        """Annotate RNA-oriented 7-mers against miRNA positions 2-8.
+
+        Exact target 7mer-m8 matches only, using reverse-complemented Seed+m8.
+        KEA defaults to the enriched delta_median/stat_log2fc intersection;
+        KRS defaults to its selected signature and target percentile scores.
+        source='manual' accepts explicit words without analysis scores.
+        No new miRNA-level hypothesis test or combined KEA score is computed.
+        """
+        import json
+        import re
+        import tempfile
+        from pathlib import Path
+        if source not in {"KEA", "KRS", "manual"}:
+            raise ValueError("source must be KEA, KRS or manual")
+        if not isinstance(top_n, (int, np.integer)) or top_n < 1:
+            raise ValueError("top_n must be a positive integer")
+        if output_dir is not None and Path(output_dir).exists():
+            raise FileExistsError("output_dir must be a new directory")
+        key = species or "input"
+        family = pd.read_csv(family_file, sep="\t")
+        required = {"miR family", "Seed+m8", "Species ID", "MiRBase ID"}
+        if not required.issubset(family.columns):
+            raise ValueError(f"Family file requires columns: {sorted(required)}")
+        family = family.loc[pd.to_numeric(family["Species ID"], errors="coerce").eq(int(species_id))].copy()
+        if family.empty:
+            raise ValueError("No family records for selected species_id")
+        family["seed_rna"] = family["Seed+m8"].astype(str).str.upper().str.replace("T", "U", regex=False)
+        if not family.seed_rna.map(lambda s: bool(re.fullmatch("[ACGU]{7}", s))).all():
+            raise ValueError("Seed+m8 must contain canonical 7-nt seeds")
+        if "Mature sequence" in family:
+            mature = family["Mature sequence"].astype(str).str.upper().str.replace("T", "U", regex=False)
+            if not mature.str[1:8].eq(family.seed_rna).all():
+                raise ValueError("Seed+m8 does not match mature miRNA positions 2-8")
+        family["target_kmer"] = family.seed_rna.map(lambda s: str(Seq(s.replace("U", "T")).reverse_complement()))
+        family["target_rna"] = family.target_kmer.str.replace("T", "U", regex=False)
+        def names(series):
+            return ";".join(sorted(set(series.dropna().astype(str))))
+        aggregations = {"mirnas": ("MiRBase ID", names)}
+        if "MiRBase Accession" in family:
+            aggregations["accessions"] = ("MiRBase Accession", names)
+        annotations = family.groupby(["miR family", "seed_rna", "target_kmer", "target_rna"], as_index=False).agg(**aggregations)
+        annotations = annotations.rename(columns={"miR family": "mirna_family"})
+        scores = None
+        state = (self.KEA_results or {}).get(key, {})
+        if source == "KEA":
+            if not {"delta_median", "stat_log2fc"}.issubset(state):
+                raise ValueError("Run both delta_median and stat_log2fc before KEA annotation")
+            if kmers is None:
+                kmers = sorted(set(state["delta_median"]["enriched"]) & set(state["stat_log2fc"]["enriched"]))
+            delta = state["delta_median"]["all_kmers"]
+            stat = state["stat_log2fc"]["all_kmers"]
+            scores = delta[["delta_median"]].join(stat[[c for c in ["log2FoldChange", "PValue", "FDR", "bonf"] if c in stat]], how="outer")
+        elif source == "KRS":
+            krs = state.get("KRS")
+            if not isinstance(krs, dict):
+                raise ValueError("Run KRS before KRS annotation")
+            if reference is not None and reference != krs["reference"]:
+                raise ValueError("Stored KRS result belongs to a different reference; rerun KRS")
+            reference = krs["reference"]
+            if kmers is None:
+                kmers = krs["signature"]
+            scores = krs["kmer_ranks"].set_index("kmer")[["target_frequency", "target_rank_percentile", "selected_KRS"]]
+        elif kmers is None:
+            raise ValueError("Supply kmers for source=manual")
+        if isinstance(kmers, str):
+            kmers = [kmers]
+        words = list(dict.fromkeys(str(k).upper().replace("U", "T") for k in kmers))
+        if any(not re.fullmatch("[ACGT]{7}", k) for k in words):
+            raise ValueError("Query words must be canonical 7-mers; no automatic decomposition")
+        query = pd.DataFrame({"kmer": pd.Series(words, dtype=str)})
+        if scores is not None:
+            scores = scores.copy()
+            scores.index = scores.index.astype(str).str.upper().str.replace("U", "T", regex=False)
+            if not scores.index.is_unique:
+                raise ValueError("Analysis scores must have unique normalized k-mer rows")
+            query = query.merge(scores, left_on="kmer", right_index=True, how="left", validate="one_to_one")
+        matches = query.merge(annotations, left_on="kmer", right_on="target_kmer", how="inner", validate="one_to_many")
+        query["matched_family_count"] = query.kmer.map(matches.groupby("kmer").mirna_family.nunique()).fillna(0).astype(int)
+        figures = []
+        if plot and len(matches) and source != "manual":
+            import matplotlib.pyplot as plt
+            metrics = ["delta_median", "log2FoldChange"] if source == "KEA" else ["target_rank_percentile"]
+            sorting = "log2FoldChange" if source == "KEA" else "target_rank_percentile"
+            shown = matches.sort_values(sorting, ascending=False, na_position="last").head(top_n).copy()
+            shown["label"] = shown.mirna_family + " | " + shown.kmer
+            fig, axes = plt.subplots(1, len(metrics), figsize=(7*len(metrics), max(3, 0.35*len(shown)+1)), squeeze=False)
+            for ax, metric in zip(axes[0], metrics):
+                ax.barh(range(len(shown)), shown[metric], color="#4477AA")
+                ax.set_yticks(range(len(shown)), shown.label)
+                ax.invert_yaxis()
+                ax.set_xlabel(metric)
+                ax.set_title("Matched k-mer score (not family-level inference)")
+                if source == "KRS":
+                    ax.set_xlim(0, 1)
+            fig.tight_layout()
+            figures.append(fig)
+        base = Path(self.dir_out)
+        if output_dir is None:
+            base.mkdir(parents=True, exist_ok=True)
+            destination = Path(tempfile.mkdtemp(prefix="MiRNASeeds_", dir=base))
+        else:
+            destination = Path(output_dir)
+            destination.mkdir(parents=True, exist_ok=False)
+        query.to_csv(destination/"query_kmers.tsv", sep="\t", index=False)
+        matches.to_csv(destination/"seed_matches.tsv", sep="\t", index=False)
+        annotations.to_csv(destination/"family_seed_map.tsv", sep="\t", index=False)
+        for fig in figures:
+            fig.savefig(destination/"seed_scores.png", dpi=180, bbox_inches="tight")
+            fig.savefig(destination/"seed_scores.pdf", bbox_inches="tight")
+        settings = dict(family_file=str(family_file), species_id=int(species_id), source=source,
+                        reference=reference, species=key, query_kmers=words,
+                        site_type="7mer-m8", seed_orientation="miRNA positions 2-8; reverse complement to target",
+                        plot=plot, top_n=top_n)
+        (destination/"settings.json").write_text(json.dumps(settings, indent=2))
+        result = dict(matches=matches, query=query, seed_map=annotations, figures=figures,
+                      settings=settings, output_dir=str(destination))
+        self.mirna_seed_annotation = result
+        return result
+
     def DomainEnrichment(
         self,
         gtf_file=None,

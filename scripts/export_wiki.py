@@ -45,6 +45,8 @@ K-tools extracts RNA k-mer signatures and associates them with RBP profiles.
 - [Documentation](Documentation)
 - [Installation](Installation)
 - [Tutorial: simulated RNA sequences](Tutorial)
+- [miRNA seed annotation](MiRNA-seeds)
+- [CDR1as example](CDR1as-miRNA-example)
 - [Kmap](Kmap)
 - [CDS domain enrichment](Domain-enrichment)
 - [Methodology](Methodology)
@@ -62,7 +64,7 @@ K-tools extracts RNA k-mer signatures and associates them with RBP profiles.
     (destination / "_Sidebar.md").write_text("[K-tools](Home)\n\n" + "\n".join(
         f"- [{name.replace('-', ' ')}]({name})" for name in [
             "Documentation", "Installation", "Tutorial", "Methodology", "API-reference",
-            "Benchmarks", "Kmap", "Domain-enrichment", "Module-parameters", "FAQs", "Data-and-reproducibility", "Known-limitations", "Citation"]) + "\n")
+            "Benchmarks", "Kmap", "Domain-enrichment", "MiRNA-seeds", "CDR1as-miRNA-example", "Module-parameters", "FAQs", "Data-and-reproducibility", "Known-limitations", "Citation"]) + "\n")
     (destination / "_Footer.md").write_text(f"[Repository]({repo_url}) · [Tutorial](Tutorial) · [FAQs](FAQs)\n")
     print(f"Wiki pages exported to {destination}; no network action performed.")
 

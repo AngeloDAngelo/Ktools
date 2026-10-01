@@ -159,3 +159,7 @@ The demonstration includes assertions for the injected motif and expected effect
 
 - [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
 - [CDS domain enrichment: inputs, frame, backgrounds and Fisher tests](Domain-enrichment.md)
+
+## miRNA seed annotation
+
+[miRNA family annotation: orientation, parameters, scores and plots](MiRNA-seeds.md) · [CDR1as worked example](CDR1as-miRNA-example.md)

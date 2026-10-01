@@ -13,3 +13,9 @@ The counting fix and stable background ordering can change scientific results. T
 
 - Added supplied DomainEnrichment method with explicit resource paths instead of laboratory defaults; additional analysis/plot settings recorded.
 - Documented existing transcript similarity and Sankey rank alignment without changing their calculations.
+
+## Added: miRNA family seed annotation
+
+- Exact reverse-complement 7mer-m8 family annotation with existing KEA/KRS scores and plots.
+- Human family table, orientation validation and tests.
+- Reproducible CDR1as GRCh38 case study against author-provided lncRNA background; genome extraction and checksums recorded.

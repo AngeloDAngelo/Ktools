@@ -1,0 +1,21 @@
+{
+  "target": "CDR1as_hsa_circ_0001946_GRCh38",
+  "target_length": 1485,
+  "background_transcripts_used": 17781,
+  "identical_sequences_excluded": 0,
+  "background_sha256": "be64f2f4bcc685a84694b6d69e02c06dc10e67741bb683ef64ceddd5c13d052a",
+  "top_pct": 5,
+  "selected_kmers": 77,
+  "miR7_7mer_m8": [
+    {
+      "kmer": "GTCTTCC",
+      "target_frequency": 0.045300878972278566,
+      "target_rank_percentile": 1.0,
+      "selected_KRS": true,
+      "target_count": 67,
+      "nonzero_population": 1823
+    }
+  ],
+  "annotation_output": "seed_matches.tsv",
+  "circular_junction_windows": "Not counted; sequence treated as one linearized traversal"
+}

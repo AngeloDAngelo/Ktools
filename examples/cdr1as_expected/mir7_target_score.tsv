@@ -1,0 +1,2 @@
+kmer	target_frequency	target_rank_percentile	selected_KRS	target_count	nonzero_population
+GTCTTCC	0.045300878972278566	1.0	True	67	1823
