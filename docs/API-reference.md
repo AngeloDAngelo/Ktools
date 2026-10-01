@@ -99,3 +99,38 @@ These methods are retained from the supplied source. Presence here is not a clai
 `kmers_counter(seq, k, all_kmers_df=None, tx_id=None)` counts overlapping windows, including the last valid start. If an enumerated k-mer universe is supplied, absent entries are filled with zero.
 
 `run_stat_test(x, y, test)` supports `mwu`, `ks` and `ttest`; it skips empty or jointly constant groups. Other helper functions support interval handling, annotations and plotting and are outside the portable workflow.
+
+## Kmap and CDS domain analysis
+
+- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
+- [CDS domain enrichment: inputs, frame, backgrounds and Fisher tests](Domain-enrichment.md)
+
+## `DomainEnrichment`
+
+```python
+DomainEnrichment(self, gtf_file=None, uniprot_dir=None,
+    kmers=None, method="stat_log2fc", species=None,
+    in_frame=False, background="control", tracks=("unipDomain",),
+    alpha=0.05, fdr_scope="global", split_blocks=True,
+    seed=42, output_dir=None, plot=True, max_domains=60,
+    ref_fasta=None, ctrl_fasta=None)
+```
+
+Returns a dictionary of statistics, occurrences, QC, matrices, figure, settings and output directory; also stores `self.domain_enrichment`. Supply GTF and UniProt paths explicitly. Optional FASTA overrides apply only to this call. See [complete parameter explanations](Domain-enrichment.md).
+
+## Kmap calls
+
+```python
+CompareTranscriptKmerProfiles(self, target_tx, other_txs,
+    target_species=None, other_species=None, metric="spearman",
+    pseudocount=1e-9, k=None, fasta_input=False,
+    fasta_species_key="_external_db")
+
+plot_kmer_rank_alignment(self, ref_tx, ctrl_tx,
+    ref_species="input", ctrl_species="input", bg_species="input",
+    kmers=None, exclude_ctrl_from_bg=True, top_n=None,
+    min_freq=None, bin_size=100, alpha_band=0.4, color_by="gc",
+    kmer_categories=None, figsize=(10, 10), save=None)
+```
+
+See [Kmap](Kmap.md) for metric definitions, cached external FASTAs, ranked output and Sankey-style visualization.

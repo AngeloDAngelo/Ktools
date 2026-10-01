@@ -177,3 +177,8 @@ Pass `txids_and_score` as exactly two columns: transcript identifiers first, num
 `kmers` defines the elements profiled. `kmer_groups` supplies grouped lists and supersedes the ordinary list for plotting/group boundaries. Frequencies are overlapping counts divided by `window_size − word_length + 1`. The combined frequency divides the sum of all query-word counts by the sum of those per-word denominators; for equal-length words this is their average frequency, not the fraction of positions matching any signature element. `strand` labels output intervals and does not reverse complement the sequence. `convert_to_rna` changes T to U in sequence and words.
 
 `n_clusters` can be a fixed cluster count or `"auto"`; `cluster_range` bounds the automatic search. `improvement_threshold` controls the relative silhouette-improvement rule. The clustering and plotting flags are advanced options; this distribution's installation/demo checks do not establish biological validity or broad robustness of positional clustering. `save_prefix` saves the ordinary and cluster heatmaps as PDFs; the implementation does not save the line or silhouette figures with this prefix. The ordinary clustermap is constructed even when `plot_heatmap=False`, which closes it after construction. Meanwhile, `plot_line`, `plot_heatmap`, `plot_cluster_heatmap` and `plot_silhouette` toggle their corresponding figures. The method returns the window table, cluster assignments and silhouette-score results.
+
+## Kmap and CDS domain analysis
+
+- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
+- [CDS domain enrichment: inputs, frame, backgrounds and Fisher tests](Domain-enrichment.md)

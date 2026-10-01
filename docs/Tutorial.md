@@ -154,3 +154,8 @@ The verified demonstration recovers the KEA signature `ACG`, `CGA`, `GAC`, produ
 | `summary.json` | Seeds, dimensions and signature summary from `run_demo.py` |
 
 The demonstration includes assertions for the injected motif and expected effect direction. For your own runs, record input checksums, parameters, seeds and environment versions. Consult [Known limitations](Known-limitations.md) when changing input sizes or using advanced helpers.
+
+## Kmap and CDS domain analysis
+
+- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
+- [CDS domain enrichment: inputs, frame, backgrounds and Fisher tests](Domain-enrichment.md)

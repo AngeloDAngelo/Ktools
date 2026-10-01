@@ -127,3 +127,11 @@ A software reuse license has not yet been selected by the authors. See [LICENSE-
 ## Support
 
 Please open a GitHub issue with your Python version, input dimensions, parameters and a small reproducible example. See [CONTRIBUTING](CONTRIBUTING.md).
+
+## Kmap: transcript profile comparison
+
+Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmerProfiles`, then visualize selected pairs using the Sankey-style `plot_kmer_rank_alignment`. See [Kmap parameters and examples](docs/Kmap.md).
+
+## CDS domain enrichment
+
+`DomainEnrichment` tests overlap of selected CDS k-mer occurrences with UniProt genomic features using reference/control or shuffled-position backgrounds. Matching full-transcript FASTAs, GTF and BED resources are required. See [parameters, inputs and interpretation](docs/Domain-enrichment.md).

@@ -17,7 +17,7 @@ def export(repo_url, destination):
     if destination == root or destination == root / "docs":
         raise ValueError("Destination must not be the repository root or docs directory")
     destination.mkdir(parents=True, exist_ok=True)
-    pages = {p.stem for p in (root / "docs").glob("*.md")}
+    pages = {p.stem for p in (root / "docs").glob("*.md") if p.stem != "Validation"}
     def convert(match):
         label, link = match.group(1), match.group(2)
         if link.startswith(("https://", "http://", "#")):
@@ -34,6 +34,8 @@ def export(repo_url, destination):
             target = repo_url + "/blob/main/" + (path[3:] if path.startswith("../") else "docs/" + path)
         return f"[{label}]({target}{fragment})"
     for page in (root / "docs").glob("*.md"):
+        if page.stem == "Validation":
+            continue
         content = re.sub(r"\[([^\]]*)\]\(([^)]+)\)", convert, page.read_text())
         (destination / page.name).write_text(content)
     home = """# K-tools Wiki
@@ -43,6 +45,8 @@ K-tools extracts RNA k-mer signatures and associates them with RBP profiles.
 - [Documentation](Documentation)
 - [Installation](Installation)
 - [Tutorial: simulated RNA sequences](Tutorial)
+- [Kmap](Kmap)
+- [CDS domain enrichment](Domain-enrichment)
 - [Methodology](Methodology)
 - [Detailed module parameters](Module-parameters)
 - [API reference](API-reference)
@@ -58,7 +62,7 @@ K-tools extracts RNA k-mer signatures and associates them with RBP profiles.
     (destination / "_Sidebar.md").write_text("[K-tools](Home)\n\n" + "\n".join(
         f"- [{name.replace('-', ' ')}]({name})" for name in [
             "Documentation", "Installation", "Tutorial", "Methodology", "API-reference",
-            "Benchmarks", "Module-parameters", "FAQs", "Data-and-reproducibility", "Known-limitations", "Citation"]) + "\n")
+            "Benchmarks", "Kmap", "Domain-enrichment", "Module-parameters", "FAQs", "Data-and-reproducibility", "Known-limitations", "Citation"]) + "\n")
     (destination / "_Footer.md").write_text(f"[Repository]({repo_url}) · [Tutorial](Tutorial) · [FAQs](FAQs)\n")
     print(f"Wiki pages exported to {destination}; no network action performed.")
 

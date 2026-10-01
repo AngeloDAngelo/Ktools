@@ -66,3 +66,16 @@ The supported tutorial covers FASTA counting, KEA, KRS and continuous-mode K-RBP
 - [Data and reproducibility](Data-and-reproducibility.md)
 - [FAQs](FAQs.md)
 - [Citation](Citation.md)
+
+## Kmap and CDS domain analysis
+
+- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
+- [CDS domain enrichment: inputs, frame, backgrounds and Fisher tests](Domain-enrichment.md)
+
+### Kmap: compare individual RNA profiles
+
+Rank candidate transcripts against a query using complete normalized k-mer profiles. Visualize selected pairs against a background using binned Sankey-style rank alignment. See [Kmap](Kmap.md).
+
+### CDS domain enrichment
+
+Test selected CDS occurrence overlaps with UniProt genomic features using control transcripts or a shuffled-position null. Inputs, frame filtering, QC and statistical interpretation are described in [Domain enrichment](Domain-enrichment.md).

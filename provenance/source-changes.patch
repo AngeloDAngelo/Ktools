@@ -1,45 +1,313 @@
---- supplied/KEA.py
-+++ repository/KEA.py
-@@ -31,6 +31,7 @@
- from wordcloud import WordCloud
- import matplotlib as mpl
- import matplotlib.font_manager as fm
-+from matplotlib_venn import venn2, venn3
+--- original/KEA.py
++++ KEA.py
+@@ -1628,6 +1628,310 @@
+         plt.close()
  
- def LocalizeRangeInTx(table,annotation_file,tx_id_column,start_col,end_col):
-     
-@@ -603,7 +604,7 @@
-     if all_kmers_df is not None and not isinstance(all_kmers_df, pd.DataFrame):
-         all_kmers_df = pd.DataFrame(all_kmers_df)
  
--    kmers = [seq[i:i+k] for i in range(0, len(seq)-k)]
-+    kmers = [seq[i:i+k] for i in range(0, len(seq)-k+1)]
-     uniq, counts = np.unique(kmers, return_counts=True)
-     conte_kmers = pd.DataFrame({0: uniq, 1: counts})
- 
-@@ -2302,7 +2303,7 @@
-         # 3. VALIDATE KMERS AGAINST DF INDEX
-         # ----------------------------------------------------------------
-         index_kmers = set(df_zscore.index)
--        kmers_valid = list(set(kmers).intersection(index_kmers))
-+        kmers_valid = sorted(set(kmers).intersection(index_kmers))
-         n_missing = len(set(kmers)) - len(kmers_valid)
-     
-        
-@@ -2315,7 +2316,7 @@
-         # NEW: VALIDATE bg_kmers
-         # ----------------------------------------------------------------
-         if bg_kmers is not None:
--            bg_kmers_valid = list(set(bg_kmers).intersection(index_kmers))
-+            bg_kmers_valid = sorted(set(bg_kmers).intersection(index_kmers))
-             print(f"[KEA] Custom bg_kmers: {len(bg_kmers)} total | {len(bg_kmers_valid)} found")
-             if len(bg_kmers_valid) == 0:
-                 raise ValueError("None of the provided bg_kmers are present in df_zscore index.")
-@@ -2328,7 +2329,7 @@
-         if mode == "continuous":
-     
-             if bg_kmers_valid is None:
--                background_kmers = list(index_kmers - set(kmers_valid))
-+                background_kmers = sorted(index_kmers - set(kmers_valid))
-             else:
-                 background_kmers = bg_kmers_valid
++    def DomainEnrichment(
++        self,
++        gtf_file=None,
++        uniprot_dir=None,
++        kmers=None, method="stat_log2fc", species=None,
++        in_frame=False, background="control", tracks=("unipDomain",),
++        alpha=0.05, fdr_scope="global", split_blocks=True,
++        seed=42, output_dir=None, plot=True, max_domains=60,
++        ref_fasta=None, ctrl_fasta=None,
++    ):
++        """CDS k-mer / UniProt-domain enrichment (GRCh38 inputs required).
++
++        Supply explicit paths to a matching GRCh38 GTF and UniProt BED directory.
++        FASTA inputs must be FULL spliced transcripts in transcript orientation,
++        with transcript IDs as the first header token, matching the GTF release.
++        Default: same k-mer occurrences in reference versus control transcripts.
++        background='shuffle': one seeded random CDS position per reference hit,
++        preserving transcript, length and (when in_frame=True) codon-start frame.
++        Fisher tests on occurrence counts are exploratory: overlapping occurrences
++        and repeated hits within transcripts are not independent biological samples.
++        Domain assignment is genomic, same-strand, >=1 nucleotide overlap; it does
++        not establish an isoform-specific protein-domain annotation.
++
++        in_frame=False (default) keeps ALL CDS occurrences, regardless of frame.
++        in_frame=True means START at a codon boundary; k need not be divisible by 3.
++        GTF CDS excludes the stop codon. Partial CDS phases are respected.
++        All observed domains across both groups are tested for every selected k-mer.
++        FDR is BH across the whole matrix by default. Untestable cells remain NaN.
++        Heatmap: corrected log2 OR; * means FDR <= alpha, grey means untestable.
++        Raw OR (including 0/inf) and raw p-values are retained in the table.
++        Output always goes to a NEW directory; existing directories are refused.
++        Returns dict and sets self.domain_enrichment.
++        """
++        import gzip
++        import re
++        import tempfile
++        import warnings
++        from collections import defaultdict, Counter
++        from pathlib import Path
++        import numpy as np
++        import pandas as pd
++        from Bio import SeqIO
++        from scipy.stats import fisher_exact
++        from statsmodels.stats.multitest import multipletests
++
++        if gtf_file is None or uniprot_dir is None:
++            raise ValueError("Supply gtf_file and uniprot_dir for matching GRCh38 resources")
++        if background not in {"control", "shuffle"}:
++            raise ValueError("background must be 'control' or 'shuffle'")
++        if fdr_scope not in {"global", "kmer"} or not 0 < alpha < 1:
++            raise ValueError("Invalid fdr_scope or alpha")
++        if max_domains is not None and max_domains < 1:
++            raise ValueError("max_domains must be positive or None")
++        if output_dir is not None and Path(output_dir).exists():
++            raise FileExistsError(f"Refusing to overwrite existing directory: {output_dir}")
++        key = species or "input"
++        if kmers is None:
++            try:
++                kmers = self.KEA_results[key][method]["enriched"]
++            except (KeyError, TypeError):
++                raise ValueError("Run ExtractKmers first or supply kmers explicitly") from None
++        if isinstance(kmers, str):
++            kmers = [kmers]
++        kmers = list(dict.fromkeys(str(k).upper().replace("U", "T") for k in kmers))
++        if not kmers or any(not re.fullmatch("[ACGT]+", k) for k in kmers):
++            raise ValueError("Supply at least one DNA/RNA k-mer without ambiguous bases")
++        if key != "input":
++            raise ValueError("DomainEnrichment supports the human input KEA object; species must be None or input")
++        if isinstance(tracks, str):
++            tracks = (tracks,)
++        allowed = {"unipDomain", "unipInterest", "unipStruct", "unipLocTransMemb",
++                   "unipLocExtra", "unipLocSignal", "unipLocCytopl", "unipRepeat"}
++        if not tracks or not set(tracks) <= allowed:
++            raise ValueError("Unsupported track; use a UniProt feature track")
++
++        def txid(s):
++            return re.sub(r"\.\d+$", "", str(s))
++
++        def fasta(path):
++            result = {}
++            op = gzip.open if str(path).endswith(".gz") else open
++            with op(path, "rt") as handle:
++                for rec in SeqIO.parse(handle, "fasta"):
++                    name = txid(rec.id)
++                    if name in result:
++                        raise ValueError(f"Duplicate normalized FASTA transcript ID: {name}")
++                    result[name] = str(rec.seq).upper().replace("U", "T")
++            return result
++
++        reference_path = ref_fasta if ref_fasta is not None else self.reference_fasta
++        control_path = ctrl_fasta if ctrl_fasta is not None else self.control_fasta
++        ref = fasta(reference_path)
++        ctrl = fasta(control_path) if background == "control" else {}
++        if set(ref) & set(ctrl):
++            raise ValueError("Reference and control transcript sets must be disjoint")
++        seqs = {**ref, **ctrl}
++        models = defaultdict(lambda: {"exon": [], "CDS": []})
++        op = gzip.open if str(gtf_file).endswith(".gz") else open
++        with op(gtf_file, "rt") as handle:
++            for line in handle:
++                if line.startswith("#"):
++                    continue
++                f = line.rstrip("\n").split("\t")
++                if len(f) != 9 or f[2] not in {"exon", "CDS"}:
++                    continue
++                match = re.search(r'transcript_id "([^"]+)"', f[8])
++                if not match or txid(match[1]) not in seqs:
++                    continue
++                name = txid(match[1])
++                chrom = f[0] if f[0].startswith("chr") else "chr" + f[0]
++                if chrom == "chrMT":
++                    chrom = "chrM"
++                m = models[name]
++                if "chrom" in m and (m["chrom"], m["strand"]) != (chrom, f[6]):
++                    raise ValueError(f"Conflicting GTF loci for {name}")
++                m.update(chrom=chrom, strand=f[6])
++                m[f[2]].append((int(f[3])-1, int(f[4]), f[7]))
++
++        # Spatial bins avoid a genome-wide interval scan for every occurrence.
++        bins = defaultdict(list)
++        bin_size = 100000
++        for track in dict.fromkeys(tracks):
++            with open(Path(uniprot_dir) / (track + ".bed")) as handle:
++                for line in handle:
++                    if not line.strip() or line.startswith(("#", "track", "browser")):
++                        continue
++                    f = line.rstrip("\n").split("\t")
++                    a, b = int(f[1]), int(f[2])
++                    label = f[26] if track in {"unipDomain", "unipInterest"} and len(f) > 26 else f[3]
++                    if track == "unipInterest" and label != "Disordered":
++                        continue
++                    if track == "unipLocSignal" and label != "Signal peptide":
++                        continue
++                    label = label.strip()
++                    if not label:
++                        continue
++                    if len(set(tracks)) > 1:
++                        label = track + ": " + label
++                    blocks = [(a, b)]
++                    if split_blocks and len(f) >= 12:
++                        sizes = [int(x) for x in f[10].rstrip(",").split(",")]
++                        starts = [int(x) for x in f[11].rstrip(",").split(",")]
++                        if len(sizes) != int(f[9]) or len(starts) != len(sizes):
++                            raise ValueError("Malformed UniProt BED12 block count")
++                        blocks = [(a+s, a+s+n) for s, n in zip(starts, sizes)]
++                    for lo, hi in blocks:
++                        if not a <= lo < hi <= b:
++                            raise ValueError("Invalid UniProt BED block coordinates")
++                        for bucket in range(lo//bin_size, (hi-1)//bin_size+1):
++                            bins[(f[0], f[5], bucket)].append((lo, hi, label))
++
++        rows, qc = [], []
++        rng = np.random.default_rng(seed)
++        for name, seq in seqs.items():
++            m = models.get(name)
++            reason = None
++            if m is None or not m["CDS"]:
++                reason = "missing_GTF_or_non_coding"
++            elif not m["exon"]:
++                reason = "missing_exons"
++            if reason:
++                qc.append((name, reason))
++                continue
++            exons = sorted(set((a, b) for a, b, _ in m["exon"]), reverse=m["strand"] == "-")
++            genomic_order = sorted(exons)
++            if any(b > c for (a, b), (c, d) in zip(genomic_order, genomic_order[1:])):
++                raise ValueError(f"Overlapping GTF exons for {name}")
++            offsets, offset = [], 0
++            for a, b in exons:
++                offsets.append((a, b, offset))
++                offset += b-a
++            if offset != len(seq):
++                qc.append((name, "FASTA_GTF_length_mismatch"))
++                continue
++            cds = []
++            for a, b, phase in m["CDS"]:
++                contained = False
++                for lo, hi, off in offsets:
++                    if lo <= a < b <= hi:
++                        start = off + (a-lo if m["strand"] == "+" else hi-b)
++                        cds.append((start, start+b-a, int(phase)))
++                        contained = True
++                        break
++                if not contained:
++                    raise ValueError(f"CDS is not contained in an exon: {name}")
++            cds = sorted(set(cds))
++            if any(b != c for (a, b, _), (c, d, _) in zip(cds, cds[1:])):
++                qc.append((name, "non_contiguous_CDS"))
++                continue
++            cs, ce, phase0 = cds[0][0], cds[-1][1], cds[0][2]
++            anchor = cs + phase0
++            if any(p != (anchor-a) % 3 for a, b, p in cds):
++                qc.append((name, "inconsistent_CDS_phase"))
++                continue
++            # Project genomic domain blocks onto this spliced transcript.
++            projected = set()
++            for lo, hi, off in offsets:
++                candidates = set()
++                for bucket in range(lo//bin_size, (hi-1)//bin_size+1):
++                    candidates.update(bins.get((m["chrom"], m["strand"], bucket), ()))
++                for a, b, label in candidates:
++                    left, right = max(lo, a), min(hi, b)
++                    if left < right:
++                        start = off + (left-lo if m["strand"] == "+" else hi-right)
++                        projected.add((start, start+right-left, label))
++
++            def record(k, pos, group):
++                domains = tuple(sorted({label for a, b, label in projected if a < pos+len(k) and pos < b}))
++                rows.append((name, k, pos, pos+len(k), (pos-anchor) % 3, group, domains))
++
++            for k in kmers:
++                pos = seq.find(k, cs, ce)
++                while pos >= 0:
++                    if not in_frame or (pos >= anchor and (pos-anchor) % 3 == 0):
++                        record(k, pos, "reference" if name in ref else "control")
++                        if background == "shuffle":
++                            first = anchor if in_frame else cs
++                            step = 3 if in_frame else 1
++                            n_positions = (ce-len(k)-first)//step+1
++                            shuffled = first + step*int(rng.integers(n_positions))
++                            record(k, shuffled, "control")
++                    pos = seq.find(k, pos+1, ce)
++            qc.append((name, "used"))
++        occurrences = pd.DataFrame(rows, columns=["transcript", "kmer", "start", "end", "frame", "group", "domains"])
++        quality = pd.DataFrame(qc, columns=["transcript", "status"])
++        if len(quality) and (quality.status != "used").any():
++            warnings.warn("Some transcripts excluded; inspect result['qc'] for reasons", stacklevel=2)
++        if occurrences.empty:
++            raise ValueError("No eligible CDS occurrences. Check IDs, full-length FASTAs, GTF and frame filter. " + str(quality.status.value_counts().to_dict()))
++        totals = Counter(zip(occurrences.kmer, occurrences.group))
++        hits = Counter()
++        for row in occurrences.itertuples(index=False):
++            hits.update((row.kmer, row.group, domain) for domain in row.domains)
++        domains = sorted({domain for _, _, domain in hits})
++        if not domains:
++            raise ValueError("No same-strand UniProt overlaps; check assembly, coordinates and selected tracks")
++        stats = []
++        for k in kmers:
++            n1, n0 = totals[k, "reference"], totals[k, "control"]
++            for domain in domains:
++                a, c = hits[k, "reference", domain], hits[k, "control", domain]
++                b, d = n1-a, n0-c
++                testable = n1 > 0 and n0 > 0 and 0 < a+c < n1+n0
++                odds, p = fisher_exact([[a, b], [c, d]], alternative="two-sided") if testable else (np.nan, np.nan)
++                # Continuity correction is for visualization ONLY, never Fisher counts.
++                delta = 0.5 if 0 in (a, b, c, d) else 0.0
++                logor = np.log2(((a+delta)*(d+delta))/((b+delta)*(c+delta))) if testable else np.nan
++                stats.append((k, domain, a, b, c, d, odds, logor, p, testable))
++        table = pd.DataFrame(stats, columns=["kmer", "domain", "A", "B", "C", "D", "odds_ratio", "log2_or", "pvalue", "testable"])
++        table["fdr"] = np.nan
++        groups = [table.index] if fdr_scope == "global" else table.groupby("kmer").groups.values()
++        for idx in groups:
++            valid = table.loc[idx, "pvalue"].dropna().index
++            if len(valid):
++                table.loc[valid, "fdr"] = multipletests(table.loc[valid, "pvalue"], method="fdr_bh")[1]
++        table["significant"] = table.fdr.le(alpha)
++        table["enriched"] = table.odds_ratio.gt(1)
++        table["significant_enrichment"] = table.significant & table.enriched
++        matrix = table.pivot(index="kmer", columns="domain", values="log2_or").reindex(kmers)
++        qmatrix = table.pivot(index="kmer", columns="domain", values="fdr").reindex(kmers)
++        figure = None
++        plotted = list(matrix.columns)
++        if plot:
++            import matplotlib.pyplot as plt
++            import seaborn as sns
++            if max_domains is not None and len(plotted) > max_domains:
++                plotted = list(qmatrix.min().sort_values(kind="stable").head(max_domains).index)
++            shown = matrix[plotted]
++            marks = qmatrix[plotted].map(lambda v: "*" if v <= alpha else "") if hasattr(qmatrix, "map") else qmatrix[plotted].applymap(lambda v: "*" if v <= alpha else "")
++            figure, ax = plt.subplots(figsize=(max(8, len(plotted)*0.48), max(3, len(kmers)*0.32)))
++            ax.set_facecolor("#dddddd")
++            sns.heatmap(shown, mask=shown.isna(), cmap="RdBu_r", center=0,
++                        annot=marks, fmt="", ax=ax, xticklabels=True, yticklabels=True,
++                        cbar_kws={"label": "log2 OR (0.5 correction if zero cells)"})
++            ax.set(xlabel="UniProt domain", ylabel="k-mer", title=f"CDS domains: reference vs {background}; * BH FDR <= {alpha}")
++            figure.tight_layout()
++        if output_dir is None:
++            base = Path(self.dir_out)
++            base.mkdir(parents=True, exist_ok=True)
++            destination = Path(tempfile.mkdtemp(prefix="DomainEnrichment_", dir=base))
++        else:
++            destination = Path(output_dir)
++            destination.mkdir(parents=True, exist_ok=False)
++        table.to_csv(destination / "statistics.tsv", sep="\t", index=False)
++        occurrences.to_csv(destination / "occurrences.tsv", sep="\t", index=False)
++        quality.to_csv(destination / "qc.tsv", sep="\t", index=False)
++        matrix.to_csv(destination / "log2_or.tsv", sep="\t")
++        qmatrix.to_csv(destination / "fdr.tsv", sep="\t")
++        if figure is not None:
++            figure.savefig(destination / "heatmap.png", dpi=180, bbox_inches="tight")
++            figure.savefig(destination / "heatmap.pdf", bbox_inches="tight")
++        import json
++        settings = dict(gtf_file=str(gtf_file), uniprot_dir=str(uniprot_dir), kmers=kmers,
++                        method=method, in_frame=in_frame, background=background, tracks=list(tracks),
++                        alpha=alpha, fdr_scope=fdr_scope, split_blocks=split_blocks, seed=seed,
++                        reference_fasta=str(reference_path), control_fasta=str(control_path),
++                        plotted_domains=plotted, species=key, plot=plot, max_domains=max_domains)
++        (destination / "settings.json").write_text(json.dumps(settings, indent=2))
++        result = dict(statistics=table, occurrences=occurrences, qc=quality,
++                      log2_or=matrix, fdr=qmatrix, figure=figure, output_dir=str(destination), settings=settings)
++        self.domain_enrichment = result
++        return result
++
++
+     def CompareTranscriptKmerProfiles(
+     self,
+     target_tx,
