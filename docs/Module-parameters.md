@@ -178,7 +178,204 @@ Pass `txids_and_score` as exactly two columns: transcript identifiers first, num
 
 `n_clusters` can be a fixed cluster count or `"auto"`; `cluster_range` bounds the automatic search. `improvement_threshold` controls the relative silhouette-improvement rule. The clustering and plotting flags are advanced options; this distribution's installation/demo checks do not establish biological validity or broad robustness of positional clustering. `save_prefix` saves the ordinary and cluster heatmaps as PDFs; the implementation does not save the line or silhouette figures with this prefix. The ordinary clustermap is constructed even when `plot_heatmap=False`, which closes it after construction. Meanwhile, `plot_line`, `plot_heatmap`, `plot_cluster_heatmap` and `plot_silhouette` toggle their corresponding figures. The method returns the window table, cluster assignments and silhouette-score results.
 
-## Kmap and CDS domain analysis
+## Kmap: transcript similarity and Sankey visualization
 
-- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
-- [CDS domain enrichment: inputs, frame, backgrounds and Fisher tests](Domain-enrichment.md)
+Kmap compares a target RNA's complete k-mer frequency profile with candidate transcript profiles. The Python method is **`CompareTranscriptKmerProfiles`**. It is independent of KEA/KRS signature extraction and returns ranked similarity scores, not significance tests.
+
+### Compare profiles
+
+| Parameter | Default | Behavior |
+| --- | --- | --- |
+| `target_tx` | Required | Exact target transcript ID in the target count table. |
+| `other_txs` | Required | List of comparison IDs, or a FASTA path when `fasta_input=True`. For one ID pass `["id"]`, not a bare string. |
+| `target_species` | None | Count-table key, default `input`. |
+| `other_species` | None | Candidate count-table key; default same as target, ignored in FASTA mode. |
+| `metric` | `spearman` | `spearman`, `pearson`, `cosine` or `jsd`, defined below. |
+| `pseudocount` | 1e-9 | Added to every frequency after per-transcript normalization. It is not an extra raw count. |
+| `k` | None | Used only for external FASTA counting; inferred from the first target-table word if omitted. Match the target word length. |
+| `fasta_input` | False | True automatically counts the supplied FASTA, using the counting method's default five workers. Use a guarded script. |
+| `fasta_species_key` | `_external_db` | Key for caching the external table. If already present it is reused without checking the new file or k. Use a new key for a changed FASTA/word length. |
+
+Counts are normalized within each transcript over its complete table. Comparison uses the intersection of row labels between target/candidate tables; frequencies are not renormalized to that intersection except implicitly by the Jensen–Shannon distance calculation. Consistent full universes are preferred.
+
+- Spearman: correlation of frequency ranks; tied frequencies receive average ranks.
+- Pearson: linear correlation of frequency values.
+- Cosine: `1 - cosine_distance`, measuring vector direction.
+- `jsd`: `1 - scipy.spatial.distance.jensenshannon(...)`, the complement of the square-root Jensen–Shannon divergence, using SciPy's default logarithm base. It is not `1 - raw_divergence`.
+
+Correlation values can be negative. These metrics have different scales and should not be treated as calibrated probabilities. Undefined scores or exceptions in the metric calculation are converted to zero by the inherited implementation; even an unsupported metric can silently yield zeros. Validate metric names and inspect empty/constant profiles. Positive pseudocounts can make empty count profiles appear uniform rather than empty.
+
+The return is a DataFrame indexed by candidate ID, with `<metric>_similarity`, sorted descending. It does not save itself. Including the query among candidates permits a self-comparison.
+
+```python
+similarity = analysis.CompareTranscriptKmerProfiles(
+    target_tx="reference_006",
+    other_txs=["reference_001", "control_001"],
+    metric="spearman",
+)
+similarity.to_csv("results/kmap_similarity.tsv", sep="\t")
+
+## Alternative external candidate FASTA:
+## similarity = analysis.CompareTranscriptKmerProfiles(
+##     "reference_006", "candidate_transcripts.fa",
+##     metric="cosine", fasta_input=True, k=3,
+##     fasta_species_key="candidate_set_k3",
+## )
+```
+
+### Sankey-style rank alignment
+
+`plot_kmer_rank_alignment` visualizes a chosen pair and a background population. It does not choose the candidate automatically; select a candidate ID from the comparison results.
+
+| Parameter | Default | Behavior |
+| --- | --- | --- |
+| `ref_tx`, `ctrl_tx` | Required | Query and comparison transcript IDs. Plot labels are Query and Control. |
+| `ref_species`, `ctrl_species`, `bg_species` | `input` | Count-table keys for query, comparison and background. |
+| `kmers` | None | All common words, or an explicit subset. Subset matching uses set intersection; tied ranks may therefore depend on set-derived ordering. |
+| `exclude_ctrl_from_bg` | True | Drop the comparison transcript from the background. The query is not automatically excluded. Use a separate background table when both should be excluded. |
+| `top_n` | None | Keep the N most frequent query words after the minimum-frequency filter. |
+| `min_freq` | None | Keep query frequencies strictly greater than this value; frequency units, not counts. |
+| `bin_size` | 100 | Number of words per band, after sorting by query rank. Use a positive integer; smaller bins show more detail. One-word bins are supported. |
+| `alpha_band` | 0.4 | Band opacity; choose between 0 and 1. |
+| `color_by` | `gc` | `gc`, `ref_rank` or `category`. |
+| `kmer_categories` | None | pandas Series indexed by word, required for category coloring. Missing labels become Unknown/grey. Dominant category colors each bin; category ties can depend on ordering. |
+| `figsize` | `(10,10)` | Matplotlib figure dimensions in inches. |
+| `save` | None | Figure filename; extension selects format, e.g. PNG/PDF. Parent directory must exist. |
+
+Each transcript is normalized separately. Background frequency is the unweighted mean of normalized transcript frequencies, not pooled counts. After filters, each column is ranked among the retained words only, using descending ranks with `method="first"`. Rank positions are 1/N through 1, so smaller positions mean higher frequency. This differs from KRS, which ranks one word across transcripts.
+
+Bands group consecutive query-ranked words and connect their mean ranks in Control, Query and Background. Half-width is `max(bin_word_count/(2*N), 0.002)`, so a minimum visible width applies. This is a binned alignment, not independent flow for every individual word.
+
+GC coloring uses mean GC fraction per band; reference-rank coloring uses its mean query rank; category coloring uses its most frequent category. The inherited tab10 palette has limited category capacity.
+
+The title's similarity is `1 - mean(abs(query_rank - comparison_rank))`, calculated for the plotted words. It is not the selected Kmap correlation/cosine/JSD score and is not a P value. Filtering changes its interpretation.
+
+```python
+analysis.plot_kmer_rank_alignment(
+    ref_tx="reference_006",
+    ctrl_tx="control_001",
+    ref_species="input",
+    ctrl_species="input",
+    bg_species="input",
+    top_n=32,
+    bin_size=4,
+    alpha_band=0.4,
+    color_by="gc",
+    save="results/kmap_rank_alignment.png",
+)
+```
+
+The method saves if requested, displays and closes the figure, prints the two rank-alignment similarities and returns None. Ensure a nonempty word set and nonempty background remain after filtering. For external candidates, use their cached table key as `ctrl_species`.
+
+
+## DomainEnrichment: CDS occurrences and UniProt features
+
+`DomainEnrichment` asks whether occurrences of selected sequence words overlap genomic UniProt domain/feature annotations more often in reference transcripts than in a chosen background. This is an exploratory occurrence-level association, not a test of independent biological replicates or isoform-specific domain function.
+
+The repository reserves [data/uniprot](../data/uniprot/README.md) for BED resources uploaded by the authors. Pass that folder as `uniprot_dir`; the files are not downloaded automatically.
+
+### Required resources
+
+Supply `gtf_file` and `uniprot_dir` explicitly; there are no bundled annotation datasets or laboratory-path defaults.
+
+- Full spliced reference/control transcript FASTAs, in transcript orientation, including UTRs. CDS-only FASTAs will generally fail the length check.
+- A matching GRCh38 GTF containing exon and CDS features and numeric CDS phases. Use the same transcript release as the FASTAs.
+- A directory containing the selected UniProt genomic BED files, for example `unipDomain.bed`. Coordinate assembly and chromosome names must agree with the GTF projection.
+
+FASTA and GTF transcript IDs have terminal version suffixes stripped. Duplicate IDs after stripping are rejected; control/reference sets must remain disjoint. FASTAs and GTF can be gzip-compressed. UniProt BED files are read as uncompressed text.
+
+GTF coordinates are converted from 1-based inclusive to 0-based half-open. GTF chromosomes are prefixed with `chr` if needed; `chrMT` becomes `chrM`. BED chromosome names are used as supplied. Domains are assigned on the same strand with at least one nucleotide overlap.
+
+### Parameters
+
+| Parameter | Default | Exact behavior |
+| --- | --- | --- |
+| `ref_fasta`, `ctrl_fasta` | None | Optional FASTA overrides for this call; None uses paths from the KEA constructor. The object is not modified. Control is ignored in shuffle mode. |
+| `gtf_file` | None | Required path to the matching GTF; missing path argument raises an error. |
+| `uniprot_dir` | None | Required directory of `<track>.bed` files. |
+| `kmers` | None | Explicit word list or a single word. If omitted, use `KEA_results[species][method]["enriched"]`; this is one method's list, not an automatically intersected KEA signature. Words are uppercased, U becomes T, duplicates are removed, and ambiguous words are rejected. Mixed lengths are allowed. |
+| `method` | `stat_log2fc` | Extraction-result key used only when `kmers=None`. Pass an explicit signature to analyze KEA intersections or KRS results. |
+| `species` | None | Only None or `input` is supported. Cross-species keys are rejected. |
+| `in_frame` | False | False retains all CDS-contained occurrences. True requires the occurrence start at a codon boundary determined from the first CDS phase. Word length need not be divisible by three. |
+| `background` | `control` | `control` finds the same words in control transcript CDSs. `shuffle` draws one random eligible CDS position per reference occurrence, within the same transcript and of the same length. |
+| `tracks` | `("unipDomain",)` | Selected UniProt feature files, listed below. With multiple tracks, labels receive track prefixes to preserve their origin. |
+| `alpha` | 0.05 | BH-adjusted significance threshold, inclusive `fdr <= alpha`; must be between 0 and 1. |
+| `fdr_scope` | `global` | `global`: BH across every testable word/feature cell. `kmer`: separate BH correction within each word. These define different testing families. |
+| `split_blocks` | True | For BED12, use its blocks instead of the complete outer interval, avoiding assignment through intervening gaps. False uses the outer interval. |
+| `seed` | 42 | NumPy generator seed for shuffled positions. It has no statistical effect in control mode. |
+| `output_dir` | None | None creates a new `DomainEnrichment_*` directory under `dir_out`. An explicit destination must not already exist, even if empty. |
+| `plot` | True | Generate and save the heatmap; False still calculates and saves all tables. |
+| `max_domains` | 60 | Maximum heatmap columns, prioritized by each domain's smallest FDR. None shows all. This does not reduce the tested domains or saved matrices. |
+
+#### Supported tracks
+
+`unipDomain`, `unipInterest`, `unipStruct`, `unipLocTransMemb`, `unipLocExtra`, `unipLocSignal`, `unipLocCytopl`, `unipRepeat`.
+
+For `unipDomain` and `unipInterest`, labels use BED column 27 when available, otherwise column 4. `unipInterest` retains only `Disordered`; `unipLocSignal` retains only `Signal peptide`. Other tracks use column 4. A generic BED with a different label convention must be adapted before use.
+
+#### Frame and shuffled background
+
+The codon anchor is the start of the spliced CDS plus its first phase. Frame is `(occurrence_start - anchor) % 3`. Frame filtering does not translate the word and does not test amino-acid motifs.
+
+Shuffle mode relocates intervals, not sequence words: the random interval need not contain the original k-mer. Positions are sampled independently and can repeat or overlap real hits. With frame filtering, shuffled starts also respect the codon anchor. Control FASTA is not read in shuffle mode.
+
+### Statistical interpretation
+
+For each selected word and each feature label observed in either group:
+
+| | Overlaps this feature | Does not overlap this feature |
+| --- | --- | --- |
+| Reference occurrences | A | B |
+| Control/shuffled occurrences | C | D |
+
+A same occurrence can contribute to several different feature tests if its interval overlaps multiple labels; repeated blocks of the same label count only once for that occurrence.
+
+A two-sided Fisher exact test compares these occurrence counts. Raw odds ratio is `(A*D)/(B*C)`. Tests require nonzero group totals and at least one overlapping and one non-overlapping occurrence across groups; otherwise the cell remains untestable with NaN statistics.
+
+Raw odds ratios, including zero/infinity, and P values are preserved. If a contingency-table cell is zero, 0.5 is added to all four cells only for the displayed `log2_or`; Fisher counts are unchanged.
+
+Positive log2 odds ratio indicates enrichment; negative values indicate depletion. `significant_enrichment` requires adjusted significance and raw odds ratio >1. Heatmap stars indicate significant association in either direction, not enrichment only. Grey cells are untestable.
+
+Overlapping words and repeated hits in a transcript are dependent observations. These P values are exploratory; do not interpret them as transcript-level replicated inference. Genomic overlap does not establish that a feature belongs to a particular protein isoform.
+
+### Example
+
+```python
+result = analysis.DomainEnrichment(
+    gtf_file="resources/annotation.gtf",
+    uniprot_dir="data/uniprot",
+    ref_fasta="reference_full_transcripts.fa",
+    ctrl_fasta="control_full_transcripts.fa",
+    kmers=signature,
+    background="control",
+    in_frame=False,
+    tracks=("unipDomain",),
+    alpha=0.05,
+    fdr_scope="global",
+    split_blocks=True,
+    plot=True,
+    max_domains=60,
+)
+print(result["output_dir"])
+print(result["statistics"])
+print(result["qc"]["status"].value_counts())
+```
+
+For the position-matched null, change `background="shuffle"` and specify `seed=42`. If you pass `output_dir`, choose a new directory for each call.
+
+### Outputs and quality control
+
+The returned dictionary is also stored as `analysis.domain_enrichment`.
+
+- `statistics.tsv`: A/B/C/D, raw odds ratio, corrected display log2 OR, raw P, BH FDR and selection flags.
+- `occurrences.tsv`: transcript, word, spliced start/end, frame, group and overlapping labels. Shuffle-control rows are random intervals, not observed sequence matches.
+- `qc.tsv`: transcript status.
+- `log2_or.tsv` and `fdr.tsv`: full word-by-feature matrices.
+- `settings.json`: input paths, selected words and analysis/plot settings.
+- `heatmap.png` and `heatmap.pdf` when `plot=True`.
+
+QC exclusions include missing/noncoding GTF models, missing exons, FASTA/GTF length mismatch, noncontiguous spliced CDS and inconsistent phase. Overlapping exons, conflicting loci, invalid BED blocks or CDS outside an exon raise errors. GTF CDS does not include the stop codon.
+
+An empty eligible occurrence set or absence of same-strand overlaps raises an error. Inspect assembly, IDs, full-transcript sequences and tracks before changing thresholds.
+
+The returned `figure` can be displayed or closed by the caller. Plot generation saves figures but does not call `plt.show()`.
