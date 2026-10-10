@@ -13,9 +13,9 @@ K-tools identifies k-mer signatures in transcript populations and individual RNA
 | **KEA** — K-mer enrichment analysis | Which sequence elements distinguish two RNA populations? | Reference and control FASTA files | Enriched and depleted k-mers |
 | **KRS** — K-mer RNA signature | Which k-mers are unusually abundant in one RNA? | Target RNA and a background population | Transcript-specific percentile-rank signature |
 | **K-RBP** — K-mer RBP association | Which RBP profiles favor the signature? | Signature and k-mer × RBP score matrix | Association statistics and candidate proteins |
-| **Kmap** — Transcript profile comparison | Which RNAs have similar k-mer profiles? | Query and candidate transcript profiles | Ranked similarities and Sankey-style alignment |
+| **K-map** — Transcript profile comparison | Which RNAs have similar k-mer profiles? | Query and candidate transcript profiles | Ranked similarities and Sankey-style alignment |
 | **K-CDS** | Where do selected CDS k-mer occurrences overlap UniProt features? | Full-transcript FASTAs, matching GTF and UniProt BED tracks | CDS frame distribution, enrichment statistics and heatmap |
-| **K_miR** | Which miRNA families have seed matches in the signature? | Selected 7-mers and miRNA family table | Exact target seed annotations and KEA/KRS score plots |
+| **K-miR** | Which miRNA families have seed matches in the signature? | Selected 7-mers and miRNA family table | Exact target seed annotations and KEA/KRS score plots |
 
 These analyses are exposed through the Python `KEA` class. Positional profiling can further locate signature elements along a transcript.
 
@@ -58,7 +58,7 @@ K-RBP compares scores for signature k-mers against background k-mers in each RBP
 ![K-RBP workflow: compare signature k-mers with experimental RBP score profiles](docs/assets/krbp-workflow.png)
 
 
-### Kmap: transcript profile comparison
+### K-map: transcript profile comparison
 
 Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmerProfiles`, then visualize selected pairs using the Sankey-style `plot_kmer_rank_alignment`. See [Kmap parameters and examples](docs/Kmap.md).
 
@@ -68,7 +68,7 @@ Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmer
 
 `K_CDS` plots each k-mer’s CDS start-frame distribution against shuffled positions and tests overlap of selected CDS k-mer occurrences with UniProt genomic features using reference/control or shuffled-position backgrounds. Matching full-transcript FASTAs, GTF and BED resources are required. See [parameters, inputs and interpretation](docs/K-CDS.md).
 
-### K_miR
+### K-miR
 
 `AnnotateMiRNASeeds` matches selected RNA 7-mers to reverse-complemented miRNA seeds and retains their KEA/KRS scores. See [parameters and orientation](docs/MiRNA-seeds.md) and the [CDR1as/miR-7 example](docs/CDR1as-miRNA-example.md).
 
