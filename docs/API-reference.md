@@ -100,9 +100,9 @@ Genomic interval and mapping helpers require external tools and configured resou
 
 `run_stat_test(x, y, test)` supports `mwu`, `ks` and `ttest`; it skips empty or jointly constant groups. Other helper functions support interval handling, annotations and plotting and are outside the portable workflow.
 
-## Kmap and CDS domain analysis
+## K-map and CDS domain analysis
 
-- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap.md)
+- [K-map: similarity metrics, parameters and Sankey visualization](K-map.md)
 - [K-CDS: inputs, frame, backgrounds and Fisher tests](K-CDS.md)
 
 ## `K_CDS`
@@ -118,7 +118,7 @@ K_CDS(self, gtf_file=None, uniprot_dir=None,
 
 Returns a dictionary of statistics, occurrences, QC, matrices, figure, settings and output directory; also stores `self.domain_enrichment`. Supply GTF and UniProt paths explicitly. Optional FASTA overrides apply only to this call. See [complete parameter explanations](K-CDS.md).
 
-## Kmap calls
+## K-map calls
 
 ```python
 CompareTranscriptKmerProfiles(self, target_tx, other_txs,
@@ -133,9 +133,9 @@ plot_kmer_rank_alignment(self, ref_tx, ctrl_tx,
     kmer_categories=None, figsize=(10, 10), save=None)
 ```
 
-See [Kmap](Kmap.md) for metric definitions, cached external FASTAs, ranked output and Sankey-style visualization.
+See [K-map](K-map.md) for metric definitions, cached external FASTAs, ranked output and Sankey-style visualization.
 
-## K_miR
+## K-miR
 
 ```python
 AnnotateMiRNASeeds(self, kmers=None, source="KEA", reference=None,
@@ -144,7 +144,7 @@ AnnotateMiRNASeeds(self, kmers=None, source="KEA", reference=None,
 
 `analysis.seed_family_file` selects the family table. The default is the resource installed with K-tools.
 
-[miRNA family annotation: orientation, parameters, scores and plots](MiRNA-seeds.md) · [CDR1as worked example](CDR1as-miRNA-example.md)
+[miRNA family annotation: orientation, parameters, scores and plots](K-miR.md) · [CDR1as worked example](CDR1as-miRNA-example.md)
 
 K-CDS uses `K_CDS` as its Python method name; The former `DomainEnrichment` name is no longer exposed. Results also include `frame_distribution` and `frame_figure`, and are stored as `self.k_cds`. See [frame plot and saved outputs](K-CDS.md#cds-frame-distribution).
 

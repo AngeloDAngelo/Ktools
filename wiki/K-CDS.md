@@ -1,6 +1,6 @@
 # K-CDS
 
-[Documentation](Documentation) · [Kmap](Kmap) · [API reference](API-reference)
+[Documentation](Documentation) · [K-map](K-map) · [API reference](API-reference)
 
 `K_CDS` asks whether occurrences of selected sequence words overlap genomic UniProt domain/feature annotations more often in reference transcripts than in a chosen background. This is an exploratory occurrence-level association, not a test of independent biological replicates or isoform-specific domain function.
 

@@ -16,8 +16,8 @@ The tutorial exercises the core FASTA workflow. The following constraints matter
 - **External helpers:** BEDTools must be on PATH. Genome mapping requires separately configured mapper resources and an external script.
 - **Cross-species and plotting helpers:** not covered by the tutorial's validation. Their availability in the API inventory does not establish portability or biological validity.
 
-## Kmap and CDS domains
+## K-map and CDS domains
 
-Kmap catches metric errors and returns zero, reuses cached external tables by key without checking changed input files, and breaks tied Sankey ranks by row order. Validate inputs as described in [Kmap](Kmap.md).
+K-map catches metric errors and returns zero, reuses cached external tables by key without checking changed input files, and breaks tied Sankey ranks by row order. Validate inputs as described in [K-map](K-map.md).
 
 Domain tests use dependent occurrence counts and are exploratory. Genomic UniProt overlaps are not isoform-specific domain assignments. Matching FASTA/GTF/BED resources are required; missing/invalid models are skipped or raise errors. See [K-CDS](K-CDS.md).

@@ -8,7 +8,7 @@ K-tools links sequence enrichment to candidate post-transcriptional regulators. 
 
 1. [Install the package and its dependencies](Installation).
 2. Read [the parameter guide](Module-parameters): exact thresholds, numerical examples, background construction and output interpretation.
-3. Run [the simulated tutorial](Tutorial) and compare the included expected output.
+3. Run [the simulated tutorial](Tutorial) and compare the included demo output.
 4. Use [the API reference](API-reference) for complete call signatures and [methodology](Methodology) for the statistical definitions.
 
 ## Modules
@@ -66,21 +66,21 @@ The supported tutorial covers FASTA counting, KEA, KRS and continuous-mode K-RBP
 - [FAQs](FAQs)
 - [Citation](Citation)
 
-## Kmap and CDS domain analysis
+## K-map and CDS domain analysis
 
-- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap)
+- [K-map: similarity metrics, parameters and Sankey visualization](K-map)
 - [K-CDS: inputs, frame, backgrounds and Fisher tests](K-CDS)
 
-### Kmap: compare individual RNA profiles
+### K-map: compare individual RNA profiles
 
-Rank candidate transcripts against a query using complete normalized k-mer profiles. Visualize selected pairs against a background using binned Sankey-style rank alignment. See [Kmap](Kmap).
+Rank candidate transcripts against a query using complete normalized k-mer profiles. Visualize selected pairs against a background using binned Sankey-style rank alignment. See [K-map](K-map).
 
-![Kmap: compare the target RNA k-mer frequency profile with matching and low-similarity profiles](https://github.com/AngeloDAngelo/Ktools/raw/refs/heads/main/docs/assets/kmap-workflow.png)
+![K-map: compare the target RNA k-mer frequency profile with matching and low-similarity profiles](https://github.com/AngeloDAngelo/Ktools/raw/refs/heads/main/docs/assets/kmap-workflow.png)
 
 ### K-CDS
 
 Test selected CDS occurrence overlaps with UniProt genomic features using control transcripts or a shuffled-position null. Inputs, frame filtering, QC and statistical interpretation are described in [K-CDS](K-CDS).
 
-## K_miR
+## K-miR
 
-[miRNA family annotation: orientation, parameters, scores and plots](MiRNA-seeds) · [CDR1as worked example](CDR1as-miRNA-example)
+[miRNA family annotation: orientation, parameters, scores and plots](K-miR) · [CDR1as worked example](CDR1as-miRNA-example)

@@ -60,9 +60,9 @@ K-RBP compares scores for signature k-mers against background k-mers in each RBP
 
 ### K-map: transcript profile comparison
 
-Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmerProfiles`, then visualize selected pairs using the Sankey-style `plot_kmer_rank_alignment`. See [Kmap parameters and examples](docs/Kmap.md).
+Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmerProfiles`, then visualize selected pairs using the Sankey-style `plot_kmer_rank_alignment`. See [K-map parameters and examples](docs/K-map.md).
 
-![Kmap: compare the target RNA k-mer frequency profile with matching and low-similarity profiles](docs/assets/kmap-workflow.png)
+![K-map: compare the target RNA k-mer frequency profile with matching and low-similarity profiles](docs/assets/kmap-workflow.png)
 
 ### K-CDS
 
@@ -70,7 +70,7 @@ Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmer
 
 ### K-miR
 
-`AnnotateMiRNASeeds` matches selected RNA 7-mers to reverse-complemented miRNA seeds and retains their KEA/KRS scores. See [parameters and orientation](docs/MiRNA-seeds.md) and the [CDR1as/miR-7 example](docs/CDR1as-miRNA-example.md).
+`AnnotateMiRNASeeds` matches selected RNA 7-mers to reverse-complemented miRNA seeds and retains their KEA/KRS scores. See [parameters and orientation](docs/K-miR.md) and the [CDR1as/miR-7 example](docs/CDR1as-miRNA-example.md).
 
 See [module parameters](docs/Module-parameters.md), [methodology](docs/Methodology.md) and the [simulated tutorial](docs/Tutorial.md). Place experimental PEKA matrices in [data/peka](data/peka/README.md).
 

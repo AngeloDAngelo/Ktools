@@ -47,9 +47,9 @@ K-tools extracts RNA k-mer signatures and associates them with RBP profiles.
 - [Documentation](Documentation)
 - [Installation](Installation)
 - [Tutorial: simulated RNA sequences](Tutorial)
-- [K_miR](MiRNA-seeds)
+- [K-miR](K-miR)
 - [CDR1as example](CDR1as-miRNA-example)
-- [Kmap](Kmap)
+- [K-map](K-map)
 - [K-CDS](K-CDS)
 - [Methodology](Methodology)
 - [Detailed module parameters](Module-parameters)
@@ -63,11 +63,11 @@ K-tools extracts RNA k-mer signatures and associates them with RBP profiles.
 [Source code and README](REPO_URL)
 """
     (destination / "Home.md").write_text(home.replace("REPO_URL", repo_url))
-    labels = {"MiRNA-seeds": "K_miR", "Benchmarks": "Demonstration checks"}
+    labels = {"K-miR": "K-miR", "Benchmarks": "Demonstration checks", "K-map": "K-map", "K-CDS": "K-CDS"}
     (destination / "_Sidebar.md").write_text("[K-tools](Home)\n\n" + "\n".join(
         f"- [{labels.get(name, name.replace('-', ' '))}]({name})" for name in [
             "Documentation", "Installation", "Tutorial", "Methodology", "API-reference",
-            "Benchmarks", "Kmap", "K-CDS", "MiRNA-seeds", "CDR1as-miRNA-example", "Module-parameters", "FAQs", "Data-and-reproducibility", "Known-limitations", "Citation"]) + "\n")
+            "Benchmarks", "K-map", "K-CDS", "K-miR", "CDR1as-miRNA-example", "Module-parameters", "FAQs", "Data-and-reproducibility", "Known-limitations", "Citation"]) + "\n")
     (destination / "_Footer.md").write_text(f"[Repository]({repo_url}) · [Tutorial](Tutorial) · [FAQs](FAQs)\n")
     print(f"Wiki pages exported to {destination}; no network action performed.")
 

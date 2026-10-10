@@ -10,6 +10,6 @@
 
 `Seed+m8` is positions 2-8 of the mature miRNA, confirmed against every included Mature sequence. It is not the target RNA sequence. `AnnotateMiRNASeeds` reverse complements it before joining target k-mers. miR-7-5p: GGAAGAC -> GUCUUCC (RNA), GTCTTCC (DNA).
 
-See [miRNA module](../../docs/MiRNA-seeds.md) and [TargetScan seed definitions](https://www.targetscan.org/docs/seed.html).
+See [miRNA module](../../docs/K-miR.md) and [TargetScan seed definitions](https://www.targetscan.org/docs/seed.html).
 
 The complete table is installed with K-tools and used by default. Set `analysis.seed_family_file` to use a different table.

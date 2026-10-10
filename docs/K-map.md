@@ -1,10 +1,10 @@
-# Kmap: transcript k-mer profile comparison
+# K-map: transcript k-mer profile comparison
 
 [Documentation](Documentation.md) · [Tutorial](Tutorial.md) · [Module parameters](Module-parameters.md)
 
-Kmap compares a target RNA's complete k-mer frequency profile with candidate transcript profiles. The Python method is **`CompareTranscriptKmerProfiles`**. It is independent of KEA/KRS signature extraction and returns ranked similarity scores, not significance tests.
+K-map compares a target RNA's complete k-mer frequency profile with candidate transcript profiles. The Python method is **`CompareTranscriptKmerProfiles`**. It is independent of KEA/KRS signature extraction and returns ranked similarity scores, not significance tests.
 
-![Kmap: compare the target RNA k-mer frequency profile with matching and low-similarity profiles](assets/kmap-workflow.png)
+![K-map: compare the target RNA k-mer frequency profile with matching and low-similarity profiles](assets/kmap-workflow.png)
 
 ## Compare profiles
 
@@ -72,7 +72,7 @@ Bands group consecutive query-ranked words and connect their mean ranks in Contr
 
 GC coloring uses mean GC fraction per band; reference-rank coloring uses its mean query rank; category coloring uses its most frequent category. The inherited tab10 palette has limited category capacity.
 
-The title's similarity is `1 - mean(abs(query_rank - comparison_rank))`, calculated for the plotted words. It is not the selected Kmap correlation/cosine/JSD score and is not a P value. Filtering changes its interpretation.
+The title's similarity is `1 - mean(abs(query_rank - comparison_rank))`, calculated for the plotted words. It is not the selected K-map correlation/cosine/JSD score and is not a P value. Filtering changes its interpretation.
 
 ```python
 analysis.plot_kmer_rank_alignment(

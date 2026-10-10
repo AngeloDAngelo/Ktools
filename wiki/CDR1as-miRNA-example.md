@@ -1,6 +1,6 @@
-# K_miR example: CDR1as / ciRS-7
+# K-miR example: CDR1as / ciRS-7
 
-[K_miR](MiRNA-seeds) · [Tutorial](Tutorial)
+[K-miR](K-miR) · [Tutorial](Tutorial)
 
 CDR1as is a published miR-7-binding circular RNA ([Hansen et al., 2013](https://doi.org/10.1038/nature11993)). This example annotates its selected seven-nucleotide words with complementary human miRNA seeds.
 
@@ -20,14 +20,12 @@ The example script streams transcripts rather than creating a dense count matrix
 
 The script uses the reference-class counting boundary: 1,478 seven-nucleotide windows from the 1,485-nt linearized sequence. It omits the final possible window and does not count junction-spanning windows.
 
-## Example figure
+## Demo plot
 
-![K_miR CDR1as example: matched miRNA seeds, target-word counts and KRS scores](https://github.com/AngeloDAngelo/Ktools/raw/refs/heads/main/examples/cdr1as_expected/seed_scores.png)
+![K-miR CDR1as demo: matched miRNA families and target k-mer percentile scores](https://github.com/AngeloDAngelo/Ktools/raw/refs/heads/main/examples/cdr1as_demo/seed_scores.png)
 
-The figure displays ten seed-matched target words in decreasing occurrence-count order. Labels identify mature miRNAs, target words and counts; points show KRS percentile scores rounded to three decimals. [Displayed values](https://github.com/AngeloDAngelo/Ktools/blob/main/examples/cdr1as_expected/displayed_seed_scores.tsv).
+`AnnotateMiRNASeeds(source="KRS", plot=True)` produces this bar-plot format. Each row identifies a matched miRNA family and its complementary target word; bar length shows the target's KRS percentile score. The demo plots up to 20 matched rows, ordered by percentile. Results depend on the comparison FASTA and selection parameters.
 
-The miR-7-5p seed `GGAAGAC` matches `GTCTTCC` (DNA) / `GUCUUCC` (RNA). This word occurs 67 times in CDR1as, giving a reference-counter frequency of 67/1,478 = 0.04533. It is highlighted in red and has a displayed KRS score of 1.000.
-
-This is a custom example display. `AnnotateMiRNASeeds(plot=True)` produces its default bar plot; results depend on the comparison FASTA and selection parameters.
+The miR-7-5p seed `GGAAGAC` matches `GTCTTCC` (DNA) / `GUCUUCC` (RNA). The target word occurs 67 times in the included CDR1as sequence.
 
 Exact seed matches nominate compatible miRNAs. They do not establish expression, binding or sponge activity; KRS percentiles are not P values.

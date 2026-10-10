@@ -1,6 +1,6 @@
-# K_miR: miRNA family annotation from 7-mer seeds
+# K-miR: miRNA family annotation from 7-mer seeds
 
-[Documentation](Documentation) · [Module parameters](Module-parameters) · [CDR1as example](CDR1as-miRNA-example)
+[Documentation](Documentation.md) · [Module parameters](Module-parameters.md) · [CDR1as example](CDR1as-miRNA-example.md)
 
 `AnnotateMiRNASeeds` merges RNA sequence signatures with family seed annotations. It reports candidate seed-compatible miRNAs, not a new miRNA-binding probability or a family-level enrichment test.
 

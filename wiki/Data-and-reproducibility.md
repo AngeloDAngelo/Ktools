@@ -4,7 +4,7 @@
 
 ## Included examples
 
-- **Synthetic demo:** 24 reference and 48 control sequences, generated with seed 42. The demo creates fictional RBP scores using seed 123. [Inputs and expected outputs](https://github.com/AngeloDAngelo/Ktools/blob/main/examples/README.md).
+- **Synthetic demo:** 24 reference and 48 control sequences, generated with seed 42. The demo creates fictional RBP scores using seed 123. [Inputs and demo outputs](https://github.com/AngeloDAngelo/Ktools/blob/main/examples/README.md).
 - **CDR1as:** a public circBase-derived sequence mapped to GRCh38, with seed annotations and example KRS scores. The comparison FASTA is supplied by the user. [Sequence source and launch command](CDR1as-miRNA-example).
 
 ## Reference resources

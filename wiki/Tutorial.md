@@ -18,7 +18,7 @@ To regenerate the inputs:
 python examples/generate_data.py
 ```
 
-Sequence generation uses seed 42. See [demonstration checks](Benchmarks) for expected outputs.
+Sequence generation uses seed 42. See [demonstration checks](Benchmarks) for demo outputs.
 
 ## 1. Load sequences and count k-mers
 
@@ -140,9 +140,9 @@ The tutorial uses a 3-mer matrix, so no decomposition is required. For signature
 
 Set `fc_thresh` explicitly. The inherited default 1.0 excludes every point under a strict Cliff's-delta filter. Plot filtering does not remove rows from the returned DataFrame.
 
-## Expected result
+## Demo result
 
-The verified demonstration recovers the KEA signature `ACG`, `CGA`, `GAC`, produces 8 KRS k-mers for `reference_006`, and evaluates 3 fictional RBP profiles. Reference outputs are saved in [examples/expected](https://github.com/AngeloDAngelo/Ktools/blob/main/examples/expected/). Floating-point statistics can vary slightly with dependency versions.
+The verified demonstration recovers the KEA signature `ACG`, `CGA`, `GAC`, produces 8 KRS k-mers for `reference_006`, and evaluates 3 fictional RBP profiles. Reference outputs are saved in [examples/demo_output](https://github.com/AngeloDAngelo/Ktools/blob/main/examples/demo_output/). Floating-point statistics can vary slightly with dependency versions.
 
 ## Output checklist
 
@@ -155,13 +155,13 @@ The verified demonstration recovers the KEA signature `ACG`, `CGA`, `GAC`, produ
 | `synthetic_rbp_results.tsv` | Complete association statistics |
 | `summary.json` | Seeds, dimensions and signature summary from `run_demo.py` |
 
-The demonstration includes assertions for the injected motif and expected effect direction. For your own runs, record input checksums, parameters, seeds and environment versions. Consult [Known limitations](Known-limitations) when changing input sizes or using advanced helpers.
+The demonstration includes assertions for the injected motif and effect direction. For your own runs, record input checksums, parameters, seeds and environment versions. Consult [Known limitations](Known-limitations) when changing input sizes or using advanced helpers.
 
-## Kmap and CDS domain analysis
+## K-map and CDS domain analysis
 
-- [Kmap: similarity metrics, parameters and Sankey visualization](Kmap)
+- [K-map: similarity metrics, parameters and Sankey visualization](K-map)
 - [K-CDS: inputs, frame, backgrounds and Fisher tests](K-CDS)
 
-## K_miR
+## K-miR
 
-[miRNA family annotation: orientation, parameters, scores and plots](MiRNA-seeds) · [CDR1as worked example](CDR1as-miRNA-example)
+[miRNA family annotation: orientation, parameters, scores and plots](K-miR) · [CDR1as worked example](CDR1as-miRNA-example)

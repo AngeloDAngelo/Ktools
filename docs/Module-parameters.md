@@ -178,9 +178,9 @@ Pass `txids_and_score` as exactly two columns: transcript identifiers first, num
 
 `n_clusters` can be a fixed cluster count or `"auto"`; `cluster_range` bounds the automatic search. `improvement_threshold` controls the relative silhouette-improvement rule. The clustering and plotting flags are advanced options; this distribution's installation/demo checks do not establish biological validity or broad robustness of positional clustering. `save_prefix` saves the ordinary and cluster heatmaps as PDFs; the implementation does not save the line or silhouette figures with this prefix. The ordinary clustermap is constructed even when `plot_heatmap=False`, which closes it after construction. Meanwhile, `plot_line`, `plot_heatmap`, `plot_cluster_heatmap` and `plot_silhouette` toggle their corresponding figures. The method returns the window table, cluster assignments and silhouette-score results.
 
-## Kmap: transcript similarity and Sankey visualization
+## K-map: transcript similarity and Sankey visualization
 
-Kmap compares a target RNA's complete k-mer frequency profile with candidate transcript profiles. The Python method is **`CompareTranscriptKmerProfiles`**. It is independent of KEA/KRS signature extraction and returns ranked similarity scores, not significance tests.
+K-map compares a target RNA's complete k-mer frequency profile with candidate transcript profiles. The Python method is **`CompareTranscriptKmerProfiles`**. It is independent of KEA/KRS signature extraction and returns ranked similarity scores, not significance tests.
 
 ### Compare profiles
 
@@ -248,7 +248,7 @@ Bands group consecutive query-ranked words and connect their mean ranks in Contr
 
 GC coloring uses mean GC fraction per band; reference-rank coloring uses its mean query rank; category coloring uses its most frequent category. The inherited tab10 palette has limited category capacity.
 
-The title's similarity is `1 - mean(abs(query_rank - comparison_rank))`, calculated for the plotted words. It is not the selected Kmap correlation/cosine/JSD score and is not a P value. Filtering changes its interpretation.
+The title's similarity is `1 - mean(abs(query_rank - comparison_rank))`, calculated for the plotted words. It is not the selected K-map correlation/cosine/JSD score and is not a P value. Filtering changes its interpretation.
 
 ```python
 analysis.plot_kmer_rank_alignment(
@@ -379,7 +379,7 @@ An empty eligible occurrence set or absence of same-strand overlaps raises an er
 
 The returned `figure` can be displayed or closed by the caller. Plot generation saves figures but does not call `plt.show()`.
 
-## K_miR: miRNA family seed annotation
+## K-miR: miRNA family seed annotation
 
 `AnnotateMiRNASeeds` merges RNA sequence signatures with family seed annotations. It reports candidate seed-compatible miRNAs, not a new miRNA-binding probability or a family-level enrichment test.
 
