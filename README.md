@@ -120,10 +120,6 @@ The `wiki/` folder supplies content for the separate GitHub Wiki; uploading the 
 
 ## Citation and reuse
 
-Please cite **K-tools** using [this repository](https://github.com/AngeloDAngelo/Ktools). Include the release or commit used for reproducibility. The bioRxiv DOI will be added when available. See [Citation](docs/Citation.md).
+Please cite **K-tools** using [this repository](https://github.com/AngeloDAngelo/Ktools). The bioRxiv DOI will be added when available. See [Citation](docs/Citation.md).
 
 No software reuse license is currently specified. See [LICENSE-STATUS](LICENSE-STATUS.md) before reusing or distributing the code.
-
-## Support
-
-Please open a GitHub issue with your Python version, input dimensions, parameters and a small reproducible example. See [CONTRIBUTING](CONTRIBUTING.md).
