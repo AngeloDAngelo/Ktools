@@ -1,0 +1,19 @@
+K-tools
+Copyright (c) 2026 Angelo D'Angelo
+
+The original K-tools source code, documentation and figures by Angelo
+D'Angelo are licensed under CC BY-NC 4.0:
+https://creativecommons.org/licenses/by-nc/4.0/
+The full license text is provided in LICENSE.
+
+Attribution: Angelo D'Angelo, K-tools,
+https://github.com/AngeloDAngelo/Ktools
+
+Third-party datasets and annotations retain their original terms and are
+excluded from this license grant. These include the PEKA matrices in
+data/peka/, the miRNA family tables in data/mirna/ and the bundled copy in
+ktools_resources/miR_Family_Info.txt, and the reference-derived CDR1as
+sequence in examples/data/CDR1as_GRCh38.fa. External UniProt, genome and
+transcriptome resources are also subject to their respective terms.
+This notice grants no additional rights to third-party material.
+Software dependencies retain their own licenses.

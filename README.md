@@ -122,4 +122,4 @@ The `wiki/` folder supplies content for the separate GitHub Wiki; uploading the 
 
 Please cite **K-tools** using [this repository](https://github.com/AngeloDAngelo/Ktools). The bioRxiv DOI will be added when available. See [Citation](docs/Citation.md).
 
-No software reuse license is currently specified. See [LICENSE-STATUS](LICENSE-STATUS.md) before reusing or distributing the code.
+Copyright © 2026 Angelo D'Angelo. Original K-tools code, documentation and figures are licensed under [CC BY-NC 4.0](LICENSE): noncommercial reuse and modification are permitted under its attribution and other conditions. Third-party datasets and dependencies retain their own terms; see [NOTICE](NOTICE).

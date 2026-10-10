@@ -4,4 +4,4 @@ Please report reproducible issues through the repository's GitHub Issues page. I
 
 For changes to counting, ranking or statistics, include a regression test and describe any change to numerical results. Keep scientific parameter changes distinct from plotting changes. Run `python -m pytest` and `python examples/run_demo.py --out results/demo` before submitting a pull request.
 
-See [license status](LICENSE-STATUS.md).
+See [CC BY-NC 4.0](LICENSE) and the [third-party notices](NOTICE).
