@@ -1328,221 +1328,173 @@ class KEA():
     stat_test="mwu",
     correction_method="bonferroni",
     median=True):
-       
+        """Reuse complete results when only selection thresholds change."""
+        import hashlib
+        import json
+
         species_key = species if species is not None else "input"
         self.KEA_results = self.KEA_results or {}
-        self.KEA_results.setdefault(species_key, {})
+        state = self.KEA_results.setdefault(species_key, {})
+        methods = tuple(extraction_methods)
+        for method in methods:
+            if method not in {"delta_rank_percentile", "delta_median", "stat_log2fc"}:
+                raise ValueError(f"Unknown extraction method: {method}")
+        if "stat_log2fc" in methods and correction_method not in {"bonferroni", "fdr", "PValue"}:
+            raise ValueError(f"Unknown correction_method: {correction_method}")
 
-        # ------------------------------
-        # Load kmer table and groups
-        # ------------------------------
         if species_key == "input":
             kmer_table = self.kmers_count_table_by_species["input"]
             ref_group = get_fasta_ids(self.reference_fasta)
             comp_group = get_fasta_ids(self.control_fasta)
         else:
-            # Species-specific kmer table and mapped FASTAs
             if species_key not in self.kmers_count_table_by_species:
                 raise ValueError(f"Kmer table for species '{species_key}' not found. Run KmersCountsTable first.")
-
             kmer_table = self.kmers_count_table_by_species[species_key]
-
-            ref_key = f"{species_key}_ref"
-            ctrl_key = f"{species_key}_ctrl"
-
+            ref_key, ctrl_key = f"{species_key}_ref", f"{species_key}_ctrl"
             if ref_key not in self.combined_fasta_by_species or ctrl_key not in self.combined_fasta_by_species:
                 raise ValueError(f"Mapped FASTAs for species '{species_key}' not found. Run FetchOrthologsAndSaveFastaOneToOne first.")
-
             ref_group = get_fasta_ids(self.combined_fasta_by_species[ref_key])
             comp_group = get_fasta_ids(self.combined_fasta_by_species[ctrl_key])
 
-        # Only keep transcript IDs that exist in kmer_table
         ref_group = [x for x in ref_group if x in kmer_table.columns]
         comp_group = [x for x in comp_group if x in kmer_table.columns]
-
-        if len(ref_group) == 0 or len(comp_group) == 0:
+        if not ref_group or not comp_group:
             raise ValueError(f"No matching transcripts found for species '{species_key}' in kmer table.")
+        kmer_matrix = kmer_table.loc[kmer_table["k"] == k_selected].drop(columns="k").copy()
+        base_out = Path(self.dir_out) / "ExtractKmers" / species_key
+        base_out.mkdir(parents=True, exist_ok=True)
 
-        # ------------------------------
-        # Subset by k
-        # ------------------------------
-        kmer_matrix = kmer_table.loc[kmer_table["k"] == k_selected].copy()
-        del kmer_matrix["k"]
+        # Thresholds and correction choice only filter results; exclude them
+        # from the identity of the calculation. Track inputs to avoid stale reuse.
+        context = {
+            "version": 1, "species": species_key, "k": int(k_selected),
+            "n_iter": int(n_iter), "stat_test": stat_test, "median": bool(median),
+            "reference": ref_group, "control": comp_group,
+            "columns": list(kmer_matrix.columns),
+            "dtypes": [str(dtype) for dtype in kmer_matrix.dtypes],
+            "counts_sha256": hashlib.sha256(
+                pd.util.hash_pandas_object(kmer_matrix, index=True).values.tobytes()
+            ).hexdigest(),
+        }
+        cached = {}
+        for method in methods:
+            required = {"freq_in_group_1", "freq_in_group_2"}
+            required.update({"log2FoldChange", "PValue", "bonf", "FDR"}
+                            if method == "stat_log2fc" else {method})
+            previous = state.get(method, {})
+            table = previous.get("all_kmers")
+            if (previous.get("_calculation") == context
+                    and isinstance(table, pd.DataFrame)
+                    and required.issubset(table.columns)):
+                cached[method] = table
+                continue
+            # Reuse a compatible saved calculation even after restarting Python.
+            for metadata_path in sorted(base_out.glob(f"{method}_*/calculation.json")):
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    if metadata.get("context") != context:
+                        continue
+                    table_path = metadata_path.parent / "all_kmers.tsv"
+                    data = table_path.read_bytes()
+                    if hashlib.sha256(data).hexdigest() != metadata.get("table_sha256"):
+                        continue
+                    table = pd.read_csv(table_path, sep="\t", index_col=0,
+                                        float_precision="round_trip")
+                    if required.issubset(table.columns):
+                        cached[method] = table
+                        break
+                except (OSError, ValueError, TypeError, AttributeError):
+                    continue
 
-        # ------------------------------
-        # Compute frequencies
-        # ------------------------------
-        perc_ref = kmer_matrix[ref_group].sum(axis=1) / kmer_matrix[ref_group].sum().sum()
-        perc_ctrl_raw = kmer_matrix[comp_group].sum(axis=1) / kmer_matrix[comp_group].sum().sum()
+        # No frequencies, control draws or statistical tests on a full cache hit.
+        if any(method not in cached for method in methods):
+            perc_ref = kmer_matrix[ref_group].sum(axis=1) / kmer_matrix[ref_group].sum().sum()
+            if len(comp_group) >= 2 * len(ref_group):
+                freq_ctrl_iter = []
+                for _ in range(n_iter):
+                    sampled = np.random.choice(comp_group, len(ref_group), replace=False)
+                    subset = kmer_matrix[sampled]
+                    freq_ctrl_iter.append(subset.sum(axis=1) / subset.sum().sum())
+                perc_ctrl = pd.concat(freq_ctrl_iter, axis=1).mean(axis=1)
+            else:
+                perc_ctrl = kmer_matrix[comp_group].sum(axis=1) / kmer_matrix[comp_group].sum().sum()
 
-        # Automatic control iteration if control group is much larger
-        use_iteration = len(comp_group) >= 2 * len(ref_group)
-
-        if use_iteration:
-            ref_size = len(ref_group)
-        
-            freq_ctrl_iter = []
-        
-            for _ in range(n_iter):
-                sampled = np.random.choice(comp_group, ref_size, replace=False)
-                subset = kmer_matrix[sampled]
-        
-                # SAME normalization as perc_ref
-                freq = subset.sum(axis=1) / subset.sum().sum()
-        
-                freq_ctrl_iter.append(freq)
-        
-            perc_ctrl = pd.concat(freq_ctrl_iter, axis=1).mean(axis=1)
-        
-        else:
-            perc_ctrl = perc_ctrl_raw
-
-        # ------------------------------
-        # Base output directory
-        # ------------------------------
-        base_out = os.path.join(self.dir_out, "ExtractKmers", species_key)
-        os.makedirs(base_out, exist_ok=True)
-
-        # ------------------------------
-        # Loop over extraction methods
-        # ------------------------------
-        for method in extraction_methods:
-            print(f"[KEA] {species_key} | {method}")
-
-            # --------------------------
-            # DELTA METHODS
-            # --------------------------
-            if method in {"delta_rank_percentile", "delta_median"}:
-
+        for method in methods:
+            print(f"[KEA] {species_key} | {method}" +
+                  (" | reusing all_kmers" if method in cached else ""))
+            if method in cached:
+                all_kmers = cached[method]
+            elif method in {"delta_rank_percentile", "delta_median"}:
                 if method == "delta_rank_percentile":
-                    score = (
-                        perc_ref.rank(method="first") / len(perc_ref) -
-                        perc_ctrl.rank(method="first") / len(perc_ctrl)
-                    )
-                    score_col = "delta_rank_percentile"
-
-                else:  # delta_median
-                   
+                    score = (perc_ref.rank(method="first") / len(perc_ref) -
+                             perc_ctrl.rank(method="first") / len(perc_ctrl))
+                else:
                     q1_r, med_r, q3_r = np.percentile(perc_ref, [25, 50, 75])
                     q1_c, med_c, q3_c = np.percentile(perc_ctrl, [25, 50, 75])
-
-                    diff_ref = np.where(
-                        perc_ref < med_r,
-                        (perc_ref - med_r) / (med_r - q1_r),
-                        (perc_ref - med_r) / (q3_r - med_r)
-                    )
-
-                    diff_ctrl = np.where(
-                        perc_ctrl < med_c,
-                        (perc_ctrl - med_c) / (med_c - q1_c),
-                        (perc_ctrl - med_c) / (q3_c - med_c)
-                    )
-
+                    diff_ref = np.where(perc_ref < med_r,
+                                        (perc_ref - med_r) / (med_r - q1_r),
+                                        (perc_ref - med_r) / (q3_r - med_r))
+                    diff_ctrl = np.where(perc_ctrl < med_c,
+                                         (perc_ctrl - med_c) / (med_c - q1_c),
+                                         (perc_ctrl - med_c) / (q3_c - med_c))
                     score = diff_ref - diff_ctrl
-                    score_col = "delta_median"
-
-                all_kmers = pd.DataFrame({
-                    "freq_in_group_1": perc_ref,
-                    "freq_in_group_2": perc_ctrl,
-                    score_col: score
-                }).sort_values(score_col, ascending=False)
-
-                top_n = max(1, int(len(all_kmers) * sign_emp_pval))
-                enriched = all_kmers.head(top_n).index.tolist()
-                depleted = all_kmers.tail(top_n).index.tolist()
-
-                subdir = f"{method}_emp{sign_emp_pval}"
-
-            # --------------------------
-            # STAT + LOG2FC
-            # --------------------------
-            elif method == "stat_log2fc":
-
+                all_kmers = pd.DataFrame({"freq_in_group_1": perc_ref,
+                                          "freq_in_group_2": perc_ctrl,
+                                          method: score}).sort_values(method, ascending=False)
+            else:
                 testing = kmer_matrix.T
                 testing = testing.div(testing.sum(axis=1), axis=0).fillna(0)
-
-                test_ref = testing.loc[ref_group]
-                test_ctrl = testing.loc[comp_group]
-
+                test_ref, test_ctrl = testing.loc[ref_group], testing.loc[comp_group]
                 rows = []
                 for kmer in kmer_matrix.index:
                     if kmer not in test_ref.columns:
                         continue
-
                     x, y = test_ref[kmer].values, test_ctrl[kmer].values
-                    #print(y)
                     if len(x) == 0 or len(y) == 0:
                         continue
                     if np.all(x == x[0]) and np.all(y == y[0]):
                         continue
-
                     stat, pval = run_stat_test(x, y, stat_test)
-                    if median:
-                        log2fc = np.log2((np.median(x)+1e-9)/(np.median(y)+1e-9))  # or mean
-                        rows.append({
-                            "kmer": kmer,
-                            "log2FoldChange": log2fc,
-                            "stat": stat,
-                            "PValue": pval,
-                            "Median_group1": np.median(x),
-                            "Median_group2": np.median(y)
-                        })
-                    else:
-                        log2fc = np.log2((np.mean(x)+1e-9)/(np.mean(y)+1e-9)) 
-                        rows.append({
-                            "kmer": kmer,
-                            "log2FoldChange": log2fc,
-                            "stat": stat,
-                            "PValue": pval,
-                            "Mean_group1": np.mean(x),
-                            "Mean_group2": np.mean(y)
-                        })
-
+                    aggregate = np.median if median else np.mean
+                    label = "Median" if median else "Mean"
+                    rows.append({"kmer": kmer,
+                                 "log2FoldChange": np.log2((aggregate(x)+1e-9)/(aggregate(y)+1e-9)),
+                                 "stat": stat, "PValue": pval,
+                                 f"{label}_group1": aggregate(x),
+                                 f"{label}_group2": aggregate(y)})
                 all_kmers = pd.DataFrame(rows).set_index("kmer")
-
                 _, all_kmers["bonf"], _, _ = multipletests(all_kmers["PValue"], method="bonferroni")
                 _, all_kmers["FDR"], _, _ = multipletests(all_kmers["PValue"], method="fdr_bh")
-
                 all_kmers["freq_in_group_1"] = perc_ref.loc[all_kmers.index]
                 all_kmers["freq_in_group_2"] = perc_ctrl.loc[all_kmers.index]
 
-                if correction_method == "bonferroni":
-                    signif = all_kmers["bonf"] <= fdr_alpha
-                
-                elif correction_method == "fdr":
-                    signif = all_kmers["FDR"] <= fdr_alpha
-                
-                elif correction_method == "PValue":
-                    signif = all_kmers["PValue"] <= fdr_alpha   # usa p-value grezzo
-                
-                else:
-                    raise ValueError(f"Unknown correction_method: {correction_method}")
-
+            if method in {"delta_rank_percentile", "delta_median"}:
+                top_n = max(1, int(len(all_kmers) * sign_emp_pval))
+                enriched = all_kmers.head(top_n).index.tolist()
+                depleted = all_kmers.tail(top_n).index.tolist()
+                subdir = f"{method}_emp{sign_emp_pval}"
+            else:
+                p_column = {"bonferroni": "bonf", "fdr": "FDR", "PValue": "PValue"}[correction_method]
+                signif = all_kmers[p_column] <= fdr_alpha
                 enriched = all_kmers[(all_kmers["log2FoldChange"] >= log2fc_threshold) & signif].index.tolist()
                 depleted = all_kmers[(all_kmers["log2FoldChange"] <= -log2fc_threshold) & signif].index.tolist()
-
                 subdir = f"{method}_log2fc{log2fc_threshold}_{correction_method}_alpha{fdr_alpha}"
 
-            else:
-                raise ValueError(f"Unknown extraction method: {method}")
-
-            # --------------------------
-            # SAVE RESULTS
-            # --------------------------
-            outdir = os.path.join(base_out, subdir)
-            os.makedirs(outdir, exist_ok=True)
-
-            FileByList(os.path.join(outdir, "enriched.txt"), enriched)
-            FileByList(os.path.join(outdir, "depleted.txt"), depleted)
-            all_kmers.to_csv(os.path.join(outdir, "all_kmers.tsv"), sep="\t")
-
-            self.KEA_results[species_key][method] = {
-                "enriched": enriched,
-                "depleted": depleted,
-                "all_kmers": all_kmers
-            }
+            outdir = base_out / subdir
+            outdir.mkdir(parents=True, exist_ok=True)
+            FileByList(str(outdir / "enriched.txt"), enriched)
+            FileByList(str(outdir / "depleted.txt"), depleted)
+            table_path = outdir / "all_kmers.tsv"
+            all_kmers.to_csv(table_path, sep="\t")
+            metadata = {"context": context,
+                        "table_sha256": hashlib.sha256(table_path.read_bytes()).hexdigest()}
+            (outdir / "calculation.json").write_text(
+                json.dumps(metadata, indent=2), encoding="utf-8")
+            state[method] = {"enriched": enriched, "depleted": depleted,
+                             "all_kmers": all_kmers, "_calculation": context}
 
         return self.KEA_results
+
 
         
     def KmerCorrelationWithScore(self, txids_and_score: pd.DataFrame, species=None, method="spearman", sign_emp_pval=0.05):
