@@ -54,6 +54,8 @@ Returns a list of signature k-mers. Stores a KRS result dictionary and, by defau
 KmersProteinEnrichment(self, kmers, df_zscore, k_out=None, deconvolute_unique=True, convert_to_rna=True, mode='continuous', test='mwu', threshold=None, top_n=None, fdr_alpha=0.05, plot=True, p_col='fdr', p_thresh=0.05, fc_thresh=1.0, highlight=None, highlight_top_n=10, save=None, bg_kmers=None, plot_type='lollipop', wordcloud_score='cliff_delta', wordcloud_top_n=10, wordcloud_font_path=None)
 ```
 
+Also stores the original-word × supplied-profile pentamer-mean score table as `self.kmer_protein_scores` by default. A 7-mer contributes three windows; a missing component yields NaN, and repeated windows retain their multiplicity. This does not change the returned enrichment table. See [score-table definitions](Module-parameters.md#original-k-mer-peka-score-table).
+
 Returns a DataFrame containing all evaluated profiles. Core fields: `protein`, `mean_group1`, `mean_group2`, `median_group1`, `median_group2`, `pvalue`, `fdr`, `bonf`, `zscore_diff` (Cliff's delta), `n1`, `n2`. `save` saves figures, not the result table: call `to_csv` yourself. Use continuous mode and explicit plot thresholds. Historical binary-mode parameters are not implemented.
 
 ### `KmerCorrelationWithScore`
@@ -110,13 +112,17 @@ Genomic interval and mapping helpers require external tools and configured resou
 ```python
 K_CDS(self, gtf_file=None, uniprot_dir=None,
     kmers=None, method="stat_log2fc", species=None,
-    in_frame=False, background="control", tracks=("unipDomain",),
+    in_frame=False, background="shuffle",
+    tracks=("unipLocCytopl", "unipLocExtra", "unipLocSignal", "unipLocTransMemb"),
     alpha=0.05, fdr_scope="global", split_blocks=True,
     seed=42, output_dir=None, plot=True, max_domains=60,
-    ref_fasta=None, ctrl_fasta=None)
+    ref_fasta=None, ctrl_fasta=None, *,
+    positional_enrichment=None, bed_feature=None,
+    recompute_positional=False, final_plots=None, rscript="Rscript",
+    frame_threshold=0.5, start_fraction=0.10, color_cap=2, show_final=True)
 ```
 
-Returns a dictionary of statistics, occurrences, QC, matrices, figure, settings and output directory; also stores `self.domain_enrichment`. Supply GTF and UniProt paths explicitly. Optional FASTA overrides apply only to this call. See [complete parameter explanations](K-CDS.md).
+Returns domain/frame tables, QC and matrices plus cached/generated positional enrichment, cluster assignments and final-panel file paths. Stores `self.k_cds` and `self.domain_enrichment`. With plots enabled, internally writes/runs R and displays both final panels in IPython; no follow-up cells are needed. Old Matplotlib figure keys remain None. See [all parameters, dependencies, reuse rules and outputs](K-CDS.md).
 
 ## K-map calls
 
@@ -146,8 +152,4 @@ AnnotateMiRNASeeds(self, kmers=None, source="KEA", reference=None,
 
 [miRNA family annotation: orientation, parameters, scores and plots](K-miR.md) · [CDR1as worked example](CDR1as-miRNA-example.md)
 
-K-CDS uses `K_CDS` as its Python method name; The former `DomainEnrichment` name is no longer exposed. Results also include `frame_distribution` and `frame_figure`, and are stored as `self.k_cds`. See [frame plot and saved outputs](K-CDS.md#cds-frame-distribution).
-
-## Separate figures
-
-With `plot=True`, the domain heatmap and CODING/SHUFFLE frame distribution are separate figures. Display `result["figure"]` for the heatmap and `result["frame_figure"]` for the frame plot. The frame legend is outside the SHUFFLE panel. Figures are saved as `heatmap.png`/`.pdf` and `frame_distribution.png`/`.pdf`.
+K-CDS uses `K_CDS` as its Python method name. `frame_distribution` remains the count/percentage table; `figure` and `frame_figure` are compatibility keys set to None. Final PDF/PNG/SVG paths are returned in `final_figures`. See [saved outputs](K-CDS.md#outputs-and-quality-control).

@@ -18,7 +18,7 @@ def fixture(tmp_path):
 
 def test_domain_projection_counts_and_overrides(tmp_path):
     a,ref,ctrl,gtf,bed=fixture(tmp_path)
-    result=a.K_CDS(gtf,bed,ref_fasta=ref,ctrl_fasta=ctrl,kmers=['AAA'],plot=False)
+    result=a.K_CDS(gtf,bed,ref_fasta=ref,ctrl_fasta=ctrl,kmers=['AAA'],plot=False,background='control',tracks=('unipDomain',))
     row=result['statistics'].iloc[0]
     assert [row.A,row.B,row.C,row.D]==[6,2,0,1]
     assert np.isinf(row.odds_ratio) and np.isfinite(row.log2_or)
@@ -31,8 +31,8 @@ def test_domain_projection_counts_and_overrides(tmp_path):
 
 def test_domain_shuffle_frame_and_heatmap(tmp_path):
     a,ref,ctrl,gtf,bed=fixture(tmp_path)
-    kwargs=dict(ref_fasta=ref,kmers=['AAA'],background='shuffle',in_frame=True,seed=42)
-    one=a.K_CDS(gtf,bed,plot=True,**kwargs)
+    kwargs=dict(ref_fasta=ref,kmers=['AAA'],background='shuffle',in_frame=True,seed=42,tracks=('unipDomain',))
+    one=a.K_CDS(gtf,bed,plot=True,final_plots=False,**kwargs)
     two=a.K_CDS(gtf,bed,plot=False,**kwargs)
     pd.testing.assert_frame_equal(one['occurrences'],two['occurrences'])
     assert one['occurrences'].frame.eq(0).all()
@@ -43,15 +43,13 @@ def test_domain_shuffle_frame_and_heatmap(tmp_path):
     assert frames.query('kmer == "AAA" and group == "shuffle"')['count'].sum() == 8
     pd.testing.assert_frame_equal(frames, two['frame_distribution'])
     assert a.k_cds is two
-    assert (Path(one['output_dir'])/'frame_distribution.png').exists()
-    assert (Path(one['output_dir'])/'frame_distribution.pdf').exists()
+    assert not (Path(one['output_dir'])/'frame_distribution.png').exists()
+    assert one['frame_figure'] is None
     assert two['frame_figure'] is None
     assert len(one['occurrences'].query('group == "reference"'))==4
     assert len(one['occurrences'].query('group == "control"'))==4
-    assert (Path(one['output_dir'])/'heatmap.png').exists()
-    import matplotlib.pyplot as plt
-    plt.close(one['figure'])
-    plt.close(one['frame_figure'])
+    assert not (Path(one['output_dir'])/'heatmap.png').exists()
+    assert one['figure'] is None
 
 
 def test_kmap_metrics_and_sankey(tmp_path):

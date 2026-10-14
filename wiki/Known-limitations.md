@@ -21,3 +21,9 @@ The tutorial exercises the core FASTA workflow. The following constraints matter
 K-map catches metric errors and returns zero, reuses cached external tables by key without checking changed input files, and breaks tied Sankey ranks by row order. Validate inputs as described in [K-map](K-map).
 
 Domain tests use dependent occurrence counts and are exploratory. Genomic UniProt overlaps are not isoform-specific domain assignments. Matching FASTA/GTF/BED resources are required; missing/invalid models are skipped or raise errors. See [K-CDS](K-CDS).
+
+## Positional enrichment and cache interpretation
+
+The final K-CDS panels require complete finite per-word CDS profiles and at least two words; `plot=False` is available for domain/frame analysis without R. Automatic positional counting retains the legacy `EnrichmentAnalysis` implementation and its k=7 denominator convention. `KmersCountsInMetaTx` sums bin lengths after intersection; multiple hits can repeat a bin in that sum. Verify these denominators before treating newly computed positional estimates as calibrated effects. Clipping/centering cannot repair upstream estimates. Reusing an existing cache reproduces its data, not necessarily its statistical validity. Stored Enr/Ctrl labels and matching bin sets do not prove that cached data came from the current FASTAs; force recomputation or explicitly choose a validated export when inputs change.
+
+The new K-RBP word/profile mean table is a descriptive PEKA-score summary. Missing pentamers yield NaN, and the supplied profile/cell-line columns are preserved.

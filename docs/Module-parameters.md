@@ -65,6 +65,23 @@ Returns a list of k-mers. A rare element observed only in the target can attain 
 
 Returns all evaluated profiles with P values and corrections. The column `zscore_diff` contains Cliff's delta, not a difference of Z scores. Positive values indicate higher signature scores. Keep profile/cell-line identity when reporting results.
 
+
+### Original k-mer PEKA score table
+
+Every `KmersProteinEnrichment` call additionally creates `analysis.kmer_protein_scores`, without changing parameters, enrichment tests, plots or the returned profile-level DataFrame. Rows are the original supplied words, before deconvolution; columns are exactly the supplied matrix profiles, including cell-line identifiers. Original order is retained and duplicate normalized words are represented once. Row labels use U when `convert_to_rna=True`.
+
+For a 7-mer, each cell is the arithmetic mean of its three overlapping 5-mer scores. Repeated pentamers count at each position, regardless of `deconvolute_unique`. Missing, nonnumeric or nonfinite component scores make that word/profile cell NaN: an average of fewer than three scores is not reported. Lookup accepts DNA/RNA notation after uppercase normalization. Duplicate normalized matrix rows are averaged within each profile for this additional table only. Words shorter than five have unavailable scores; longer words use all overlapping pentamers. A matrix of another word length cannot supply these pentamer means and will yield unavailable cells.
+
+These are summaries of supplied PEKA scores, **not measured binding affinities or new significance tests**. Profile columns are not merged by protein name. The added table is independent of background sampling and plot significance filters.
+
+```python
+results = analysis.KmersProteinEnrichment(
+    signature, peka_matrix, k_out=5, plot=False,
+)
+results.to_csv("rbp_enrichment.tsv", sep="\t", index=False)
+analysis.kmer_protein_scores.to_csv("original_kmer_peka_scores.tsv", sep="\t")
+```
+
 ## Choosing parameters: exact behavior and worked examples
 
 ### Counting: `k`, `cores` and `subset_by_subseq`
@@ -269,54 +286,67 @@ The method saves if requested, displays and closes the figure, prints the two ra
 
 ## K-CDS: CDS occurrences and UniProt features
 
-`K_CDS` asks whether occurrences of selected sequence words overlap genomic UniProt domain/feature annotations more often in reference transcripts than in a chosen background. This is an exploratory occurrence-level association, not a test of independent biological replicates or isoform-specific domain function.
+`analysis.K_CDS(...)` performs the occurrence-level UniProt association analysis and, by default, directly creates the two final panels: domain enrichment and CDS positional enrichment with coding/shuffle frame bars and In Frame Index. No subsequent notebook cells or external R script preparation are needed. Occurrence-level Fisher tests remain exploratory; genomic overlaps do not establish isoform-specific protein function.
 
-The repository reserves [data/uniprot](../data/uniprot/README.md) for BED resources uploaded by the authors. Pass that folder as `uniprot_dir`; the files are not downloaded automatically.
+### Required resources and software
 
-### Required resources
+Supply a matching GRCh38 GTF with exon/CDS features and numeric phases, a directory of the selected UniProt BED tracks, and full spliced reference/control transcript FASTAs in transcript orientation. UTRs must be retained. GTF/FASTA IDs are matched after stripping terminal version suffixes for the CDS projection; duplicate normalized IDs are rejected. GTF and FASTA inputs may be gzip-compressed. UniProt inputs are uncompressed genomic BED files. GTF coordinates are converted to zero-based half-open coordinates and chromosome names prefixed with `chr`; `chrMT` becomes `chrM`. BED names are used unchanged.
 
-Supply `gtf_file` and `uniprot_dir` explicitly; there are no bundled annotation datasets or laboratory-path defaults.
+The final panels require `Rscript` on PATH, R packages **ComplexHeatmap** and **circlize**, and a graphics-capable R installation. Install these separately from the Python package:
 
-- Full spliced reference/control transcript FASTAs, in transcript orientation, including UTRs. CDS-only FASTAs will generally fail the length check.
-- A matching GRCh38 GTF containing exon and CDS features and numeric CDS phases. Use the same transcript release as the FASTAs.
-- A directory containing the selected UniProt genomic BED files, for example `unipDomain.bed`. Coordinate assembly and chromosome names must agree with the GTF projection.
+```r
+install.packages(c("BiocManager", "circlize"))
+BiocManager::install("ComplexHeatmap")
+```
 
-FASTA and GTF transcript IDs have terminal version suffixes stripped. Duplicate IDs after stripping are rejected; control/reference sets must remain disjoint. FASTAs and GTF can be gzip-compressed. UniProt BED files are read as uncompressed text.
-
-GTF coordinates are converted from 1-based inclusive to 0-based half-open. GTF chromosomes are prefixed with `chr` if needed; `chrMT` becomes `chrM`. BED chromosome names are used as supplied. Domains are assigned on the same strand with at least one nucleotide overlap.
+BEDTools on PATH is needed only when missing positional profiles must be computed through `EnrichmentAnalysis`. It is not used when complete cached profiles are available. The embedded R script is written to the output directory and run by Python. Dependency failures stop before the expensive positional analysis. `plot=False` disables rendering by default and requires neither R nor positional inputs; domain/frame tables are still calculated.
 
 ### Parameters
 
-| Parameter | Default | Exact behavior |
+| Parameter | Default | Behavior |
 | --- | --- | --- |
-| `ref_fasta`, `ctrl_fasta` | None | Optional FASTA overrides for this call; None uses paths from the KEA constructor. The object is not modified. Control is ignored in shuffle mode. |
-| `gtf_file` | None | Required path to the matching GTF; missing path argument raises an error. |
-| `uniprot_dir` | None | Required directory of `<track>.bed` files. |
-| `kmers` | None | Explicit word list or a single word. If omitted, use `KEA_results[species][method]["enriched"]`; this is one method's list, not an automatically intersected KEA signature. Words are uppercased, U becomes T, duplicates are removed, and ambiguous words are rejected. Mixed lengths are allowed. |
-| `method` | `stat_log2fc` | Extraction-result key used only when `kmers=None`. Pass an explicit signature to analyze KEA intersections or KRS results. |
-| `species` | None | Only None or `input` is supported. Cross-species keys are rejected. |
-| `in_frame` | False | False retains all CDS-contained occurrences. True requires the occurrence start at a codon boundary determined from the first CDS phase. Word length need not be divisible by three. |
-| `background` | `control` | `control` finds the same words in control transcript CDSs. `shuffle` draws one random eligible CDS position per reference occurrence, within the same transcript and of the same length. |
-| `tracks` | `("unipDomain",)` | Selected UniProt feature files, listed below. With multiple tracks, labels receive track prefixes to preserve their origin. |
-| `alpha` | 0.05 | BH-adjusted significance threshold, inclusive `fdr <= alpha`; must be between 0 and 1. |
-| `fdr_scope` | `global` | `global`: BH across every testable word/feature cell. `kmer`: separate BH correction within each word. These define different testing families. |
-| `split_blocks` | True | For BED12, use its blocks instead of the complete outer interval, avoiding assignment through intervening gaps. False uses the outer interval. |
-| `seed` | 42 | NumPy generator seed for shuffled positions, including the independent frame-plot background. |
-| `output_dir` | None | None creates a new `K_CDS_*` directory under `dir_out`. An explicit destination must not already exist, even if empty. |
-| `plot` | True | Generate and save the domain heatmap and CODING/SHUFFLE frame plot; False still calculates and saves all tables. |
-| `max_domains` | 60 | Maximum heatmap columns, prioritized by each domain's smallest FDR. None shows all. This does not reduce the tested domains or saved matrices. |
+| `gtf_file`, `uniprot_dir` | None | Required matching GTF and directory of `<track>.bed` files. |
+| `ref_fasta`, `ctrl_fasta` | None | Call-specific overrides; otherwise use the constructor's paths. The control FASTA is ignored by shuffle-domain counting, but is needed if reference-versus-control positional enrichment must be computed. |
+| `kmers` | None | List or single canonical DNA/RNA word; uppercase, U→T and deduplicate. None uses `KEA_results[species][method]["enriched"]`, not an automatic method intersection. Final panels require at least two words. |
+| `method`, `species` | `stat_log2fc`, None | Stored extraction-result key and input species. Only None/`input` species is supported. |
+| `background` | `shuffle` | Domain tests compare reference occurrences with randomized intervals. `control` instead uses actual control-transcript occurrences. Positional profiles separately compare Enr with Ctrl. |
+| `tracks` | `("unipLocCytopl", "unipLocExtra", "unipLocSignal", "unipLocTransMemb")` | Feature files to load. Labels receive track prefixes when more than one track is selected. |
+| `in_frame` | False | Retain all CDS-contained occurrences; True restricts domain-analysis occurrences and their shuffled backgrounds to codon-boundary starts, respecting the first CDS phase. Frame distributions always include all three positions. |
+| `alpha`, `fdr_scope` | 0.05, `global` | Inclusive BH cutoff; `global` corrects across testable word/feature cells, `kmer` separately within each word. |
+| `split_blocks` | True | Project BED12 blocks rather than entire outer intervals. |
+| `seed` | 42 | Independent seeded NumPy generators for domain shuffle and the unrestricted frame-distribution shuffle. |
+| `output_dir` | None | Create a unique `K_CDS_*` directory under `dir_out`; an explicit destination must not exist. |
+| `plot` | True | Controls final-panel generation unless `final_plots` is explicitly set. The old Matplotlib domain and CODING/SHUFFLE figures are removed. |
+| `final_plots` | None | None follows `plot`; False disables R rendering and positional preparation. True can render panels even with `plot=False`. |
+| `positional_enrichment` | None | Optional DataFrame or TSV with `kmer`, `bin`, `log2_or`; `fdr` is retained when present. A supplied input must contain complete finite profiles for selected words. |
+| `bed_feature` | None | Optional occurrence BED DataFrame or headered TSV used only to calculate missing positional profiles. |
+| `recompute_positional` | False | True bypasses positional caches and recalculates profiles; False reuses them and calculates missing/incompatible profiles only. |
+| `rscript` | `Rscript` | Executable name or path for the R renderer. |
+| `frame_threshold` | 0.5 | Inclusive maximum coding-frame fraction required to display a domain row. Below-threshold or unavailable rows are marked `N.C.`; this does not classify their origin as noncoding. Must be in [0,1]. |
+| `start_fraction` | 0.10 | Leading fraction of CDS bins used to name the clusters; count is rounded upward and bounded to leave at least one remaining bin. Must be strictly between 0 and 1. |
+| `color_cap` | 2 | Positive finite clipping bound, applied before centering/clustering; also sets the shared color scale. This affects cluster membership, not just colors. |
+| `max_domains` | 60 | Maximum displayed domain columns, ranked by minimum FDR, with stable original-order ties; None shows all. Full statistics and matrices are retained. |
+| `show_final` | True | Display both final PNGs in IPython/Jupyter; outside IPython files are still saved. |
 
-#### Supported tracks
+### Positional input reuse and automatic calculation
 
-`unipDomain`, `unipInterest`, `unipStruct`, `unipLocTransMemb`, `unipLocExtra`, `unipLocSignal`, `unipLocCytopl`, `unipRepeat`.
+With `recompute_positional=False`, the method first looks for per-word `EnrichmentAnalysis` entries in `self.enrichment`, identified by exact `<kmer>_Enr_VS_Ctrl` analysis labels. Repeated stored entries use the last row per bin. Pooled signature analyses such as `ZipCodes_Enr_VS_Ctrl` cannot provide individual word profiles. If no reusable per-word entries exist, the previous `self.k_cds` positional table/output directory and then `dir_out/K_CDS/positional_enrichment.tsv` and `dir_out/positional_enrichment.tsv` are considered. An explicit `positional_enrichment` overrides discovery.
 
-For `unipDomain` and `unipInterest`, labels use BED column 27 when available, otherwise column 4. `unipInterest` retains only `Disordered`; `unipLocSignal` retains only `Signal peptide`. Other tracks use column 4. A generic BED with a different label convention must be adapted before use.
+If profiles are missing, the method loads both full-transcript FASTAs and calls `EnrichmentAnalysis` separately for missing words. It uses `self.metatx` when available; otherwise it looks for one compatible `metatx*.bed` file under `dir_out`, or reconstructs a metatranscript from the matching FASTA/GTF using mean regional length proportions. Reconstructed regional bin counts are three times rounded percentage proportions, with a minimum of one bin per region; zero-width transcript bins are omitted. The reconstructed coordinates can differ from a separately supplied annotation table: retain the original metatranscript/cache to reproduce an earlier analysis exactly.
 
-#### Frame and shuffled background
+Occurrence coordinates come from `bed_feature`, then a saved `dir_out/kmers_bed.bed`, or an automatic scan for overlapping exact matches in both FASTA populations. Automatic positional counting uses the existing KEA helper's **k=7** convention; for other word lengths, supply complete positional estimates. All computed and cached profiles must share the same CDS bin set; incompatible partial caches are recalculated. `self.enrichment` is restored after internal calls, and the assembled profiles are stored in the returned result and saved for reuse. Original FASTA IDs are used for transcript-coordinate enrichment and must match `self.metatx`/BED IDs.
 
-The codon anchor is the start of the spliced CDS plus its first phase. Frame is `(occurrence_start - anchor) % 3`. Frame filtering does not translate the word and does not test amino-acid motifs.
+### Clusters, ordering and panels
 
-Shuffle mode relocates intervals, not sequence words: the random interval need not contain the original k-mer. Positions are sampled independently and can repeat or overlap real hits. With frame filtering, shuffled starts also respect the codon anchor. Control FASTA is not read in shuffle mode.
+CDS bins are sorted numerically. Complete unmasked finite log2 OR estimates are clipped to ±`color_cap`, then each row is centered on its own mean. Euclidean distance and Ward.D2 are applied to these profiles and the tree is cut into two groups. The cluster with the larger mean contrast between the first `start_fraction` of bins and the remaining bins is called **CDS start**; the other is **CDS body**. The contrast uses clipped, uncentered values. These are relative labels, not independent significance tests, and body rows may still have positive initial contrast. The numbers of words are data-dependent and are not fixed at 22/52.
+
+Both panels use body first, then start, with decreasing **In Frame Index** inside each group and DNA sequence as a tie-breaker. In Frame Index is 100 times the largest coding-frame fraction. The positional heatmap displays clipped values without centering. Its grey/white/black bars represent first/second/third starting codon positions for coding and shuffle groups. Missing frame groups have unavailable fractions and explicit missing-data labels; finite groups sum to 100%. K-mer labels use U. Domain rows below `frame_threshold` are marked `N.C.`; stars mark FDR ≤`alpha` in either direction.
+
+Frame 0/1/2 is `(start - anchor) % 3`, with anchor equal to CDS start plus first GTF phase. Domain shuffle relocates intervals; it does not shuffle nucleotides or require randomized intervals to contain the word. Random starts can repeat. The frame-distribution background draws one unrestricted random start per reference CDS occurrence, independently of domain filtering and background mode. No frame significance test is performed.
+
+### Supported tracks
+
+`unipDomain`, `unipInterest`, `unipStruct`, `unipLocTransMemb`, `unipLocExtra`, `unipLocSignal`, `unipLocCytopl`, `unipRepeat`. For `unipDomain` and `unipInterest`, use BED column 27 when present, otherwise column 4. `unipInterest` retains only `Disordered`; `unipLocSignal` only `Signal peptide`. Other tracks use column 4.
 
 ### Statistical interpretation
 
@@ -343,41 +373,45 @@ Overlapping words and repeated hits in a transcript are dependent observations. 
 result = analysis.K_CDS(
     gtf_file="resources/annotation.gtf",
     uniprot_dir="data/uniprot",
-    ref_fasta="reference_full_transcripts.fa",
-    ctrl_fasta="control_full_transcripts.fa",
     kmers=signature,
-    background="control",
-    in_frame=False,
-    tracks=("unipDomain",),
-    alpha=0.05,
-    fdr_scope="global",
-    split_blocks=True,
+    background="shuffle",
     plot=True,
-    max_domains=60,
 )
-print(result["output_dir"])
-print(result["statistics"])
-print(result["qc"]["status"].value_counts())
+# Both final panels are already saved and displayed in a notebook.
+print(result["figures_dir"])
+print(result["cluster_assignments"])
+print(result["final_figures"]["main_domains"]["svg"])
 ```
 
-For the position-matched null, change `background="shuffle"` and specify `seed=42`. If you pass `output_dir`, choose a new directory for each call.
+To reuse an explicitly chosen positional export, add `positional_enrichment="previous_run/positional_enrichment.tsv"`. To compute missing profiles, the reference/control FASTAs and BEDTools must be available. No cells need to run after `K_CDS`.
+
+For annotation/statistics only:
+
+```python
+result = analysis.K_CDS(
+    gtf_file="resources/annotation.gtf",
+    uniprot_dir="data/uniprot",
+    kmers=signature,
+    tracks=("unipDomain",),
+    background="control",
+    plot=False,
+)
+```
 
 ### Outputs and quality control
 
-The returned dictionary is also stored as `analysis.k_cds` (also `analysis.domain_enrichment` for compatibility).
+The returned dictionary is stored as both `analysis.k_cds` and `analysis.domain_enrichment`.
 
-- `statistics.tsv`: A/B/C/D, raw odds ratio, corrected display log2 OR, raw P, BH FDR and selection flags.
-- `occurrences.tsv`: transcript, word, spliced start/end, frame, group and overlapping labels. Shuffle-control rows are random intervals, not observed sequence matches.
-- `qc.tsv`: transcript status.
-- `log2_or.tsv` and `fdr.tsv`: full word-by-feature matrices.
-- `settings.json`: input paths, selected words and analysis/plot settings.
-- `heatmap.png` and `heatmap.pdf` when `plot=True`.
+- `statistics`, `occurrences`, `qc`, `log2_or`, `fdr`, `frame_distribution`, `settings`, `output_dir`: original tables and metadata, saved as their matching TSV/JSON files.
+- `positional_enrichment`: assembled positional DataFrame; also `positional_enrichment.tsv` when final panels are enabled.
+- `cluster_assignments`: per-word DataFrame with group, maximum frame fraction, preferred frame, capped/raw initial contrasts, In Frame Index and RNA label. None without final panels.
+- `final_figures`: dictionaries of `pdf`, `png`, `svg` paths for `main_domains` and `supplement_positions_frames`; empty without final panels.
+- `figures_dir`: final-panel directory, present when rendering succeeds. Contains `cluster_assignments.tsv`, both panels in all three formats, and `plot_settings.txt` with the R session information.
+- `heatmap_script.R` and `heatmap_R.log`: generated renderer and its stdout/stderr in the run directory.
+- `figure` and `frame_figure`: compatibility keys set to None. The old `heatmap.png/pdf` and `frame_distribution.png/pdf` are no longer generated.
 
-QC exclusions include missing/noncoding GTF models, missing exons, FASTA/GTF length mismatch, noncontiguous spliced CDS and inconsistent phase. Overlapping exons, conflicting loci, invalid BED blocks or CDS outside an exon raise errors. GTF CDS does not include the stop codon.
+QC exclusions include missing/noncoding models, missing exons, sequence/GTF length mismatch, noncontiguous CDS and inconsistent phase. Conflicting loci, overlapping exons, invalid BED blocks and CDS outside an exon raise errors. Empty eligible occurrence sets or absent same-strand UniProt overlaps also raise errors. GTF CDS excludes the stop codon. On an R rendering failure the existing domain/frame tables remain saved, with the R log for diagnosis.
 
-An empty eligible occurrence set or absence of same-strand overlaps raises an error. Inspect assembly, IDs, full-transcript sequences and tracks before changing thresholds.
-
-The returned `figure` can be displayed or closed by the caller. Plot generation saves figures but does not call `plt.show()`.
 
 ## K-miR: miRNA family seed annotation
 
@@ -459,31 +493,6 @@ Returns `matches`, `query`, `seed_map`, `figures`, `settings`, `output_dir`; als
 
 Figure objects remain available for the caller to display or close. No extra runtime dependencies are needed.
 
-## CDS frame distribution
+## K-CDS figures and BED compatibility
 
-K-CDS is called as `analysis.K_CDS(...)` in Python. The Python method is `K_CDS`; the former `DomainEnrichment` name is no longer exposed.
-
-For each k-mer, two horizontal stacked bars compare **CODING** and **SHUFFLE**. Blue, orange and green show the percentage of starts at the first, second and third codon positions (frames 0, 1 and 2), respecting the GTF phase. CODING pools all CDS-contained reference occurrences, before `in_frame` filtering. SHUFFLE draws one unrestricted random CDS start per reference occurrence, in the same transcript and with the same interval length. Its independent seeded generator does not alter the domain-enrichment background. Even with `in_frame=True`, this plot includes all three frames. The shuffle is generated for this plot in both background modes.
-
-Percentages sum to 100 within each k-mer/group with occurrences. Missing groups have NaN percentages and are marked “No occurrences”. Short CDSs and finite sampling can produce unequal shuffle proportions; no frame significance test is performed.
-
-- `frame_distribution.tsv`: k-mer, group (`coding`, `shuffle`, or `control`), frame, count and percent; control counts are included when control transcripts are loaded.
-- `frame_distribution.png` and `frame_distribution.pdf`: CODING/SHUFFLE plot when `plot=True`.
-- `result["frame_distribution"]`: the count/percentage table.
-- `result["frame_figure"]`: the Matplotlib figure (`None` with `plot=False`).
-
-This module still requires GTF and UniProt resources and an evaluable domain overlap; it is not a standalone frame-only analysis.
-
-## What makes another BED compatible?
-
-Compatible files are not limited to the original downloads. They must satisfy all of these requirements:
-
-- **Format:** uncompressed, tab-separated genomic BED text with at least six columns: `chrom`, `chromStart`, `chromEnd`, `name`, `score`, `strand`. Start is zero-based and end is excluded, so `chr1\t100\t110\tFeature\t0\t+` represents ten nucleotides. Intervals must have start < end and strand `+` or `-`; unknown strand will not match the GTF. With BED12 and `split_blocks=True`, column 10 is blockCount, column 11 contains comma-separated blockSizes, and column 12 contains comma-separated blockStarts relative to chromStart. Counts must agree and all blocks must lie within the outer interval. Files use the selected track name, e.g. `unipLocCytopl.bed`.
-- **Labels:** feature names come from column 4, except `unipDomain` and `unipInterest`, which use column 27 when present. Names must be nonempty. `unipLocSignal` retains only the exact, case-sensitive label `Signal peptide`; `unipInterest` retains only `Disordered`. Other tracks retain their labels as supplied. With multiple tracks, labels are prefixed with the track name. A different label convention must be adapted before running the method.
-- **Assembly:** genomic coordinates must use the same reference assembly as the GTF (this workflow uses human GRCh38/hg38). Renaming an hg19 file does not convert its coordinates to hg38. BED chromosome names must match the projected GTF names: `chr1`, `chr2`, …, `chrX`, `chrY`, `chrM`. The method prefixes GTF names with `chr` and converts GTF `chrMT` to `chrM`, but it does not normalize BED chromosome names or lift coordinates between assemblies. Full-transcript FASTA sequences and IDs must also match the GTF annotation release.
-
-Upload your working BED files to `data/uniprot`, preserving their names and annotations, and record source, assembly, release and download date.
-
-## Separate figures
-
-With `plot=True`, the domain heatmap and CODING/SHUFFLE frame distribution are separate figures. Display `result["figure"]` for the heatmap and `result["frame_figure"]` for the frame plot. The frame legend is outside the SHUFFLE panel. Figures are saved as `heatmap.png`/`.pdf` and `frame_distribution.png`/`.pdf`.
+See [K-CDS](K-CDS.md) for the final panels, frame interpretation and compatible BED inputs.

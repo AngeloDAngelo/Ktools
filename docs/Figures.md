@@ -7,3 +7,5 @@
 - [K-RBP workflow](assets/krbp-workflow.png): query/background score comparison, effect size and multiple-testing correction. Values are schematic.
 - [K-map schematic](assets/kmap-workflow.png): target, matching and low-similarity k-mer frequency profiles.
 - [K-miR CDR1as demo](../examples/cdr1as_demo/seed_scores.png): the module's bar plot of matched miRNA families, target words and KRS percentile scores.
+
+K-CDS now generates only `main_domains` and `supplement_positions_frames`, in PDF, PNG and SVG. Both panels share CDS body/start groups and decreasing In Frame Index within groups. The positional panel includes grey/white/black frame bars and an index line. See [K-CDS](K-CDS.md).

@@ -61,3 +61,7 @@ python -m pip check
 The import path should point inside the active environment's `site-packages` for a regular install. The package name is `ktools-rna`; the Python module name is `KEA`. This project is not published to PyPI: use the local repository install command rather than `pip install ktools-rna`.
 
 After upload, another user can download/extract the repository or clone it, create a virtual environment, and run the same installation commands. The repository's `docs`, figures and demo inputs remain in the downloaded repository; the miRNA family table is installed as package data, while documentation and example inputs remain in the repository.
+
+## K-CDS final-panel dependencies
+
+With `plot=True`, K-CDS requires Rscript on PATH and R packages ComplexHeatmap and circlize. Python does not install these. Run `install.packages(c("BiocManager", "circlize")); BiocManager::install("ComplexHeatmap")` in R. Automatic missing positional profiles also require BEDTools. Complete cached profiles bypass BEDTools. `plot=False` saves domain/frame tables without R. See [K-CDS](K-CDS).

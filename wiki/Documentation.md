@@ -49,7 +49,7 @@ Use matching annotation releases for sequences, region boundaries and mapped exp
 
 ## Outputs
 
-KEA writes `all_kmers.tsv`, `enriched.txt` and `depleted.txt` for each requested selection. KRS writes `signature.txt` and `kmer_ranks.tsv`; the full rank matrix is optional and can be large. K-RBP returns a DataFrame; save it explicitly with `to_csv`. The [API reference](API-reference) records parameters, return values and output locations.
+KEA writes `all_kmers.tsv`, `enriched.txt` and `depleted.txt` for each requested selection. KRS writes `signature.txt` and `kmer_ranks.tsv`; the full rank matrix is optional and can be large. K-RBP returns a profile-level DataFrame and also stores `analysis.kmer_protein_scores`; save either table explicitly with `to_csv`. The [API reference](API-reference) records parameters, return values and output locations.
 
 ## Scope of this distribution
 
@@ -79,7 +79,7 @@ Rank candidate transcripts against a query using complete normalized k-mer profi
 
 ### K-CDS
 
-Test selected CDS occurrence overlaps with UniProt genomic features using control transcripts or a shuffled-position null. Inputs, frame filtering, QC and statistical interpretation are described in [K-CDS](K-CDS).
+Test selected CDS occurrence overlaps with UniProt genomic features and directly generate the grouped domain and positional/frame panels, reusing cached positional profiles or calculating missing ones. Inputs, frame filtering, QC and statistical interpretation are described in [K-CDS](K-CDS).
 
 ## K-miR
 

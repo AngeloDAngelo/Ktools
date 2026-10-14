@@ -14,7 +14,7 @@ K-tools identifies k-mer signatures in transcript populations and individual RNA
 | **KRS** — K-mer RNA signature | Which k-mers are unusually abundant in one RNA? | Target RNA and a background population | Transcript-specific percentile-rank signature |
 | **K-RBP** — K-mer RBP association | Which RBP profiles favor the signature? | Signature and k-mer × RBP score matrix | Association statistics and candidate proteins |
 | **K-map** — Transcript profile comparison | Which RNAs have similar k-mer profiles? | Query and candidate transcript profiles | Ranked similarities and Sankey-style alignment |
-| **K-CDS** | Where do selected CDS k-mer occurrences overlap UniProt features? | Full-transcript FASTAs, matching GTF and UniProt BED tracks | CDS frame distribution, enrichment statistics and heatmap |
+| **K-CDS** | Where do selected CDS k-mer occurrences overlap UniProt features? | Full-transcript FASTAs, matching GTF and UniProt BED tracks | Grouped domain/positional panels, frame distributions and enrichment tables |
 | **K-miR** | Which miRNA families have seed matches in the signature? | Selected 7-mers and miRNA family table | Exact target seed annotations and KEA/KRS score plots |
 
 These analyses are exposed through the Python `KEA` class. Positional profiling can further locate signature elements along a transcript.
@@ -66,7 +66,7 @@ Compare complete transcript k-mer frequency profiles with `CompareTranscriptKmer
 
 ### K-CDS
 
-`K_CDS` plots each k-mer’s CDS start-frame distribution against shuffled positions and tests overlap of selected CDS k-mer occurrences with UniProt genomic features using reference/control or shuffled-position backgrounds. Matching full-transcript FASTAs, GTF and BED resources are required. See [parameters, inputs and interpretation](docs/K-CDS.md).
+`K_CDS` directly produces grouped domain and CDS positional heatmaps, with coding/shuffle frame bars and In Frame Index, while testing UniProt feature overlap. It reuses per-k-mer positional results or calculates missing profiles and runs an embedded R renderer; no follow-up notebook cells are needed. R/ComplexHeatmap/circlize are required for plots, and BEDTools for automatic positional calculation. Matching full-transcript FASTAs, GTF and BED resources are required. See [parameters, inputs and interpretation](docs/K-CDS.md).
 
 ### K-miR
 
@@ -123,3 +123,5 @@ The `wiki/` folder supplies content for the separate GitHub Wiki; uploading the 
 Please cite **K-tools** using [this repository](https://github.com/AngeloDAngelo/Ktools). The bioRxiv DOI will be added when available. See [Citation](docs/Citation.md).
 
 Copyright © 2026 Angelo D'Angelo. Original K-tools code, documentation and figures are licensed under [CC BY-NC 4.0](LICENSE): noncommercial reuse and modification are permitted under its attribution and other conditions. Third-party datasets and dependencies retain their own terms; see [NOTICE](NOTICE).
+
+K-RBP also creates `analysis.kmer_protein_scores` by default: original 7-mer rows × supplied protein/profile columns, containing the mean of three overlapping pentamer PEKA scores. Enrichment return values are unchanged. See [definitions and missing-score handling](docs/Module-parameters.md#original-k-mer-peka-score-table).

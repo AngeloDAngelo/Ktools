@@ -6,7 +6,7 @@ Upload the UniProt BED tracks used by `KEA.K_CDS` here. No BED resources are inc
 
 The function loads `<track>.bed` from the directory passed as `uniprot_dir`:
 
-- `unipDomain.bed` (default domain track)
+- `unipDomain.bed` (optional domain track)
 - `unipInterest.bed` (Disordered features only)
 - `unipStruct.bed`
 - `unipLocTransMemb.bed`
@@ -57,3 +57,5 @@ Compatible files are not limited to the original downloads. They must satisfy al
 - **Assembly:** genomic coordinates must use the same reference assembly as the GTF (this workflow uses human GRCh38/hg38). Renaming an hg19 file does not convert its coordinates to hg38. BED chromosome names must match the projected GTF names: `chr1`, `chr2`, …, `chrX`, `chrY`, `chrM`. The method prefixes GTF names with `chr` and converts GTF `chrMT` to `chrM`, but it does not normalize BED chromosome names or lift coordinates between assemblies. Full-transcript FASTA sequences and IDs must also match the GTF annotation release.
 
 Upload your working BED files to `data/uniprot`, preserving their names and annotations, and record source, assembly, release and download date.
+
+The default tracks are the four localization files above and the default background is `shuffle`. Final plots require R, ComplexHeatmap and circlize. Set `plot=False` for annotation tables only; no follow-up cells are needed for final panels with `plot=True`.

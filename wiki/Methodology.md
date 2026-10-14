@@ -61,3 +61,9 @@ BH and Bonferroni corrections are computed across tested RBP profiles. Profile-l
 
 The sliding-window method counts overlapping occurrences within complete windows, normalizes by possible starts, and can cluster k-mer spatial profiles. Window size, step and number of clusters are configurable. This positional analysis does not establish functional domains without additional evidence.
 
+
+## Original-word PEKA summaries and CDS clusters
+
+K-RBP additionally stores `analysis.kmer_protein_scores`: each original 7-mer/profile value is the mean of three overlapping pentamer scores, counting repeated windows and requiring all components to be finite. This is independent of the signature/background significance analysis and is not a binding-affinity measurement. See [details](Module-parameters#original-k-mer-peka-score-table).
+
+K-CDS clusters complete CDS log2 OR profiles after clipping to ±2 and centering each row on its mean, using Euclidean distance and Ward.D2 cut into two groups. The group with higher leading-10%-minus-rest contrast is CDS start. Display values are clipped but uncentered. Body precedes start; rows within each group are sorted by maximum coding-frame fraction. The clipping bound and leading fraction are configurable. See [K-CDS](K-CDS).

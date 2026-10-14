@@ -128,3 +128,7 @@ The filenames do not define additional preprocessing steps.
 - [Tutorial](../../docs/Tutorial.md)
 - [Module parameters](../../docs/Module-parameters.md)
 - [Methodology](../../docs/Methodology.md)
+
+## Scores for each original k-mer
+
+Every K-RBP call also stores `analysis.kmer_protein_scores`. Its rows retain the original input words and its columns retain the supplied protein/cell-line profiles. For 7-mers it averages the three overlapping pentamer scores, counting repetitions. Any missing/nonfinite component yields NaN. Save with `analysis.kmer_protein_scores.to_csv("kmer_peka_scores.tsv", sep="\t")`. This additional summary is not a measured binding affinity and does not replace enrichment statistics.

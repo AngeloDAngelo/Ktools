@@ -65,3 +65,11 @@ Cite the repository URL and the exact release or commit used, with access date. 
 ### Is uploading the `wiki/` folder enough to enable GitHub Wiki?
 
 No. GitHub Wiki is a separate Git repository. The folder contains prepared page sources; publish them through the Wiki editor or export them to a clone of the Wiki repository. The main `docs/` pages work immediately after uploading the repository.
+
+### Do I need cells after K-CDS to draw the final plots?
+
+No. `K_CDS(plot=True)` reuses per-k-mer positional results or computes missing profiles, then writes/runs the embedded R renderer and saves both panels in PDF, PNG and SVG. R dependencies are required. Pooled signature enrichment is not a per-word cache. Use `plot=False` for domain/frame tables only.
+
+### Where are the scores for each original 7-mer against each RBP?
+
+After K-RBP, read `analysis.kmer_protein_scores`. It contains means of three overlapping pentamer PEKA scores, with NaN for missing components. The original profile-level enrichment DataFrame is still returned.
