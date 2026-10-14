@@ -3124,7 +3124,7 @@ class KEA():
         wordcloud_top_n=10,
         wordcloud_font_path=None):
 
-        # Additional output: original k-mer x supplied protein/profile scores.
+        # Additional output: original k-mer x enriched protein/profile scores.
         # For a 7-mer, use its three overlapping pentamers, including repeats.
         # A missing/nonfinite pentamer score makes that cell NaN: the value
         # therefore always represents the mean of all three pentamer scores.
@@ -3159,12 +3159,14 @@ class KEA():
             else:
                 score_rows.append(np.full(len(df_zscore.columns), np.nan))
 
-        self.kmer_protein_scores = pd.DataFrame(
+        all_protein_scores = pd.DataFrame(
             score_rows,
             index=pd.Index(row_labels, name="kmer"),
             columns=df_zscore.columns.copy(),
             dtype=float
         )
+        # Clear previous selections, including when no enrichment results exist.
+        self.kmer_protein_scores = all_protein_scores.iloc[:, :0].copy()
 
         # ----------------------------------------------------------------
         # 1. DECONVOLUTE KMERS (optional)
@@ -3316,6 +3318,19 @@ class KEA():
         results["significant_fdr"]  = results["fdr"]  < fdr_alpha
         results["significant_bonf"] = results["bonf"] < fdr_alpha
         results = results.sort_values("fdr").reset_index(drop=True)
+
+        # Use the requested significance and positive Cliff's delta thresholds.
+        # Column order follows decreasing Cliff's delta, independent of plotting.
+        if p_col not in results.columns:
+            raise ValueError(f"Unknown significance column: {p_col}")
+        enriched_proteins = results.loc[
+            (results[p_col] < p_thresh)
+            & (results["zscore_diff"] > 0)
+            & (results["zscore_diff"] >= fc_thresh)
+        ].sort_values("zscore_diff", ascending=False, kind="stable")["protein"]
+        self.kmer_protein_scores = all_protein_scores.loc[
+            :, enriched_proteins.tolist()
+        ].copy()
     
         n_sig_fdr  = results["significant_fdr"].sum()
         n_sig_bonf = results["significant_bonf"].sum()
