@@ -766,68 +766,141 @@ class KEA():
         else:
             self.combined_fasta_by_species[species] = output_fasta
 
-    def KmersCountsTable(self, k, cores=5, subset_by_subseq=None, species=None):
+    def KmersCountsTable(self, k, cores=5, subset_by_subseq=None, species=None,
+                         *, cache=True, force=False):
+        """Build the complete k-mer count table, automatically saving/reusing it.
 
+        By default write a compressed pandas table and JSON manifest inside
+        self.dir_out (the directory supplied when constructing KEA). Reuse
+        requires matching FASTA content, k, species, subsequence filter,
+        counter implementation and numpy/pandas versions. Core count does
+        not affect the cache key. force=True recounts; cache=False disables
+        disk caching. Counting semantics and the existing None return are
+        unchanged. The table remains in kmers_count_table_by_species.
+        """
+        import hashlib
+        import inspect
+        import json
+        import pickle
+        import tempfile
+
+        species_key = "input" if species is None else species
         if species is None:
             INPUT = self.combined_fasta
-            species_key = "input"
         else:
             INPUT = self.combined_fasta_by_species.get(species)
-            species_key = species
-            if INPUT is None:
-                raise ValueError(f"Combined FASTA for species '{species}' not found. Run CreateCombinedFasta first.")
+        if INPUT is None:
+            existing = Path(self.dir_out) / (
+                'combined_sequences.fa' if species is None else f'combined_sequences_{species}.fa')
+            if existing.is_file():
+                INPUT = str(existing)
+                if species is None:
+                    self.combined_fasta = INPUT
+                else:
+                    self.combined_fasta_by_species[species] = INPUT
+            else:
+                raise ValueError(f"Combined FASTA for species '{species_key}' not found. Run CreateCombinedFasta first.")
+        input_path = Path(INPUT)
+        if not input_path.is_file():
+            raise FileNotFoundError(input_path)
 
-        # -------------------------------
-        # Generate all kmers
-        # -------------------------------
-        prodotto = list(product("ATCG", repeat=k))
-        all_kmers = list(map("".join, prodotto))
+        # Preserve the original order and duplicate-filter semantics.
+        filters = list(subset_by_subseq) if subset_by_subseq else None
+        all_kmers = list(map("".join, product("ATCG", repeat=k)))
+        if filters:
+            all_kmers = [word for subseq in filters for word in all_kmers if subseq in word]
 
-        if subset_by_subseq:
-            selected = []
-            for subseq in subset_by_subseq:
-                selected += [x for x in all_kmers if subseq in x]
-            all_kmers = selected
+        def digest(path):
+            sha = hashlib.sha256()
+            with Path(path).open('rb') as stream:
+                for block in iter(lambda: stream.read(1024*1024), b''):
+                    sha.update(block)
+            return sha.hexdigest()
+
+        if not hasattr(self, 'kmers_count_table_by_species'):
+            self.kmers_count_table_by_species = {}
+        if not hasattr(self, 'kmers_count_cache'):
+            self.kmers_count_cache = {}
+        identity = cache_path = metadata_path = None
+        if cache:
+            identity = dict(format_version=1, k=k, species=species_key,
+                            subset_by_subseq=filters, input_sha256=digest(input_path),
+                            counter_sha256=hashlib.sha256(inspect.getsource(kmers_counter).encode()).hexdigest(),
+                            numpy_version=np.__version__, pandas_version=pd.__version__)
+            slug = ''.join(c if c.isalnum() or c in '._-' else '_' for c in str(species_key))
+            if slug != str(species_key):
+                slug += '_'+hashlib.sha256(str(species_key).encode()).hexdigest()[:12]
+            suffix = '' if filters is None else '_subset_'+hashlib.sha256(
+                json.dumps(filters, ensure_ascii=True).encode()).hexdigest()[:16]
+            cache_path = Path(self.dir_out)/f'kmers_counts_{slug}_k{k}{suffix}.pkl.gz'
+            metadata_path = cache_path.with_suffix(cache_path.suffix+'.json')
+            if not force and cache_path.is_file() and metadata_path.is_file():
+                try:
+                    metadata = json.loads(metadata_path.read_text())
+                    if metadata['identity'] == identity:
+                        if digest(cache_path) != metadata['table_sha256']:
+                            raise ValueError('cache checksum mismatch')
+                        table = pd.read_pickle(cache_path, compression='gzip')
+                        if (not isinstance(table, pd.DataFrame)
+                                or table.index.tolist() != all_kmers
+                                or table.columns.tolist() != metadata['columns']
+                                or list(table.shape) != metadata['shape']
+                                or not table['k'].eq(k).all()):
+                            raise ValueError('cache schema mismatch')
+                        if digest(input_path) != identity['input_sha256']:
+                            raise RuntimeError('Input FASTA changed while loading the cache.')
+                        self.kmers_count_table_by_species[species_key] = table
+                        self.kmers_count_cache[species_key] = dict(
+                            state='reused', table=str(cache_path), metadata=str(metadata_path))
+                        print(f"[KEA] Loaded cached k-mer table: {cache_path}")
+                        return
+                    print('[KEA] K-mer cache differs from the current inputs or parameters; recounting.')
+                except (OSError, ValueError, KeyError, TypeError, EOFError,
+                        pickle.UnpicklingError, ImportError, AttributeError) as exc:
+                    print(f'[KEA] Invalid k-mer cache; recounting ({type(exc).__name__}).')
 
         print(f"[KEA] Counting kmers (k={k}) for species '{species_key}' | N kmers: {len(all_kmers)}")
-        all_kmers_df = pd.DataFrame(all_kmers)
-
-        # -------------------------------
-        # Read FASTA as dataframe
-        # -------------------------------
-        # input_file = pd.read_table(INPUT, header=None, dtype=str)
-        # input_seq = input_file[input_file[0].str.count(">") == 0].reset_index(drop=True)
-        # input_id = input_file[input_file[0].str.count(">") == 1].reset_index(drop=True)
-
         records = list(SeqIO.parse(INPUT, "fasta"))
         input_id = [rec.id for rec in records]
         input_seq = [str(rec.seq) for rec in records]
-        
-
-        
-
         all_k = [k] * len(input_seq)
         all_kmers_list = [all_kmers] * len(input_seq)
-        #all_ids = [x.replace(">", "") for x in input_id[0].tolist()]
-        all_ids = input_id
-
-        # -------------------------------
-        # Count kmers using multiprocessing
-        # -------------------------------
         with mp.Pool(cores) as pool:
-            kmers_list = pool.starmap(kmers_counter,zip(input_seq, all_k, all_kmers_list, all_ids)) #input_seq[0].tolist()
-
-
+            kmers_list = pool.starmap(kmers_counter, zip(input_seq, all_k, all_kmers_list, input_id))
         kmer_counts = pd.concat(kmers_list, axis=1)
         kmer_counts["k"] = k
 
-        # -------------------------------
-        # Store in species-specific dictionary
-        # -------------------------------
-        if not hasattr(self, "kmers_count_table_by_species"):
-            self.kmers_count_table_by_species = {}
-
+        if cache:
+            if digest(input_path) != identity['input_sha256']:
+                raise RuntimeError('Input FASTA changed during counting; no cache was saved.')
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            table_temp = metadata_temp = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=cache_path.parent,
+                        prefix='.'+cache_path.name+'.', suffix='.tmp', delete=False) as stream:
+                    table_temp = Path(stream.name)
+                kmer_counts.to_pickle(table_temp, compression={'method':'gzip', 'compresslevel':1})
+                metadata = dict(identity=identity, input_fasta=str(input_path.resolve()),
+                                table_sha256=digest(table_temp), shape=list(kmer_counts.shape),
+                                columns=kmer_counts.columns.tolist())
+                with tempfile.NamedTemporaryFile(mode='w', dir=cache_path.parent,
+                        prefix='.'+metadata_path.name+'.', suffix='.tmp', delete=False) as stream:
+                    metadata_temp = Path(stream.name)
+                    json.dump(metadata, stream, indent=2)
+                    stream.write('\n')
+                os.replace(table_temp, cache_path)
+                os.replace(metadata_temp, metadata_path)
+            finally:
+                for temporary in [table_temp, metadata_temp]:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
+            self.kmers_count_cache[species_key] = dict(
+                state='computed_saved', table=str(cache_path), metadata=str(metadata_path))
+            print(f'[KEA] Saved k-mer table: {cache_path}')
+        else:
+            self.kmers_count_cache[species_key] = dict(state='computed_cache_disabled', table=None, metadata=None)
         self.kmers_count_table_by_species[species_key] = kmer_counts
+
 
     def KRS(
         self,
