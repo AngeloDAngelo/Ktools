@@ -3901,7 +3901,7 @@ class KEA():
 
 
     def cooccurrence(
-        self, kmers=None, mode='short', *, species=None, methods=('delta_median', 'stat_log2fc'),
+        self, kmers=None, mode='cooccurrence', *, species=None, methods=('delta_median', 'stat_log2fc'),
         fasta_file=None, n_resamples=999, n_reference=99, alpha=0.05, seed=42,
         distance_filter=True, save=True, output_dir=None, store_null=False,
         plot=False, top_n=6, verbose=True,
@@ -3910,20 +3910,20 @@ class KEA():
 
         Test all unordered pairs of enriched k-mers against random non-motif windows.
 
-        short: statistic = sum_t count(A,t)*count(B,t). Random windows are sampled
+        mode='cooccurrence': statistic = sum_t count(A,t)*count(B,t). Random windows are sampled
         uniformly without replacement across all valid reference windows, excluding
         windows equal to A or B. Their total counts match observed A and B counts.
         Thus TX assignment is length-weighted and may vary; fixing TX counts would
         make this statistic constant.
 
-        long: run short first, then (by default) retain pairs with short FDR<=alpha.
+        mode='cooccurrence_distance': run cooccurrence first, then (by default)
+        retain pairs with cooccurrence FDR<=alpha.
         In each co-occurring TX, sample distinct background windows matching BOTH
         observed counts in that TX. Compute ALL Cartesian A-B distances. Compare
         the observed distance CDF to an independent random reference CDF with a
         Monte Carlo-calibrated KS statistic. No iid KS p-value is used.
 
-        Distances are absolute center-to-center nt distances; for equal k they equal
-        absolute start-coordinate distances. Coordinates are 0-based, half-open.
+        Distances are abs(start_A-start_B) in nt, using 0-based start coordinates.
         Different starts may have overlapping windows; identical starts cannot be
         reused in the same simulation. Scanning is on input transcript orientation.
 
@@ -3931,10 +3931,15 @@ class KEA():
         recent self.KEA_results[species or 'input']; an empty method stays empty.
         Otherwise supply KEA_motifs explicitly. Only one common k (1..31) is supported.
 
-        Returns dict: pairs (all pair tests/statuses), transcript_counts (TX x k-mer),
-        positions (word -> TX -> starts), distributions (long pair -> npz path or
-        histogram DataFrame), null_statistics (if requested), settings, output_dir,
-        figures. Long filters on pairs, never on a claimed significance of one TX.
+        Returns a cooccurrence DataFrame, or a tuple (cooccurrence_df, distance_df)
+        in distance mode. Each table contains every unordered pair once: AB=BA.
+        Distance summaries (mean/median/sample SD/min/max/quartiles) are reported
+        for all observed pairs; distance p/q are missing for unselected or
+        non-testable pairs. SD has ddof=1 and is missing for a single distance.
+        Random summaries describe pooled distances from n_reference replicates.
+        Full details remain in self.cooccurrence_results: pairs, cooccurrence,
+        distances, transcript_counts, positions, distributions, null_statistics,
+        settings, output_dir, figures. No support module is required.
 
         save=True creates a fresh Cooccurrence/<species>/<mode>/run_* directory;
         no previous result or enrichment file is overwritten. No discovery rerun.
@@ -3956,7 +3961,7 @@ class KEA():
         from scipy.signal import correlate
         from statsmodels.stats.multitest import multipletests
 
-        VERSION = '1.0.0'
+        VERSION = '1.1.0'
 
 
         def _sha(path):
@@ -4055,7 +4060,7 @@ class KEA():
 
 
         def _distance_histogram(a, b, n_starts, max_distance):
-            """All |center_A-center_B| distances, without subsampling site pairs."""
+            """All |start_A-start_B| distances, without subsampling site pairs."""
             n_pairs = len(a)*len(b)
             hist = np.zeros(max_distance+1, dtype=np.int64)
             if not n_pairs:
@@ -4098,9 +4103,33 @@ class KEA():
             return adjusted
 
 
+        def _histogram_summary(histogram):
+            """Exact expanded-sample summaries from integer start-distance counts."""
+            total = int(np.sum(histogram))
+            if not total:
+                return dict(n=0, mean=np.nan, median=np.nan, sd=np.nan,
+                            min=np.nan, max=np.nan, q25=np.nan, q75=np.nan)
+            axis = np.arange(len(histogram), dtype=float)
+            cumulative = np.cumsum(histogram)
+            mean = float(np.dot(axis, histogram)/total)
+            def quantile(q):
+                rank = (total-1)*q
+                lo, hi = math.floor(rank), math.ceil(rank)
+                x = int(np.searchsorted(cumulative, lo, side='right'))
+                y = int(np.searchsorted(cumulative, hi, side='right'))
+                return x+(y-x)*(rank-lo)
+            occupied = np.flatnonzero(histogram)
+            return dict(n=total, mean=mean, median=quantile(.5),
+                        sd=float(np.sqrt(np.dot((axis-mean)**2, histogram)/(total-1))) if total > 1 else np.nan,
+                        min=int(occupied[0]), max=int(occupied[-1]), q25=quantile(.25), q75=quantile(.75))
+
+
         started = time.time()
-        if mode not in {'short', 'long'}:
-            raise ValueError("mode must be 'short' or 'long'.")
+        aliases = {'short':'cooccurrence', 'long':'cooccurrence_distance',
+                   'cooccurence_distance':'cooccurrence_distance'}
+        mode = aliases.get(mode, mode)
+        if mode not in {'cooccurrence', 'cooccurrence_distance'}:
+            raise ValueError("mode must be 'cooccurrence' or 'cooccurrence_distance'.")
         for name, number in [('n_resamples', n_resamples), ('n_reference', n_reference), ('top_n', top_n)]:
             if isinstance(number, bool) or int(number) != number or number < 1:
                 raise ValueError(f'{name} must be a positive integer.')
@@ -4144,7 +4173,9 @@ class KEA():
                         excluded_random_words='current pair A and B only',
                         short_null='global observed A/B totals; length-weighted TX assignments',
                         long_null='observed A/B counts in each co-occurring TX preserved',
-                        distance='all Cartesian pairs, absolute center-to-center nt',
+                        pair_identity='unordered distinct motifs; AB equals BA',
+                        distance='all Cartesian pairs, abs(start_A-start_B) nt',
+                        distance_sd_ddof=1, random_distance_summary='pooled n_reference replicates',
                         numpy_version=np.__version__, pandas_version=pd.__version__)
         directory = None
         if save:
@@ -4171,45 +4202,77 @@ class KEA():
             row = dict(kmer_a=words[i], kmer_b=words[j], n_a=n_a, n_b=n_b,
                        n_cooccurring_transcripts=n_both, observed_pairs=observed,
                        eligible_random_windows=pool_size, expected_pairs_analytic=theoretical,
-                       null_mean_pairs=np.nan, null_sd_pairs=np.nan, pair_enrichment=np.nan,
+                       null_mean_pairs=np.nan, null_median_pairs=np.nan, null_sd_pairs=np.nan,
+                       null_q025_pairs=np.nan, null_q975_pairs=np.nan,
+                       excess_pairs=np.nan, pair_enrichment=np.nan, zscore_pairs=np.nan,
                        p_cooccurrence=np.nan, short_status='pending', distance_status='not_requested')
             if pool_size < n_a+n_b:
                 row['short_status'] = 'insufficient_background_windows'
             elif observed == 0:
                 row.update(short_status='zero_observed_pairs', p_cooccurrence=1.0,
-                           null_mean_pairs=theoretical, pair_enrichment=0.0 if theoretical else np.nan)
+                           null_mean_pairs=theoretical, excess_pairs=-theoretical,
+                           pair_enrichment=0.0 if theoretical else np.nan)
             else:
                 entropy = [int(seed), len(words[0]), word_codes[i] & 0xffffffff, word_codes[i] >> 32,
                            word_codes[j] & 0xffffffff, word_codes[j] >> 32]
                 rng = np.random.default_rng(np.random.SeedSequence(entropy).spawn(3)[0])
                 null = _short_null(eligible, n_a, n_b, n_resamples, rng)
                 mean = float(null.mean())
+                sd = float(null.std(ddof=1)) if n_resamples > 1 else np.nan
                 row.update(short_status='complete', null_mean_pairs=mean,
-                           null_sd_pairs=float(null.std(ddof=1)) if n_resamples > 1 else np.nan,
+                           null_median_pairs=float(np.median(null)), null_sd_pairs=sd,
+                           null_q025_pairs=float(np.quantile(null,.025)),
+                           null_q975_pairs=float(np.quantile(null,.975)),
+                           excess_pairs=observed-mean,
+                           zscore_pairs=(observed-mean)/sd if sd > 0 else np.nan,
                            pair_enrichment=observed/mean if mean else np.inf,
                            p_cooccurrence=(1+int(np.count_nonzero(null >= observed)))/(n_resamples+1))
                 if store_null:
                     random_statistics[(words[i], words[j])] = {'cooccurrence':null}
             records.append(row)
             if verbose and (number == n_tests or number % max(1, n_tests//20) == 0):
-                print(f'[KEA short] {number}/{n_tests}', flush=True)
+                print(f'[KEA cooccurrence] {number}/{n_tests}', flush=True)
         table = pd.DataFrame(records)
         table['q_cooccurrence'] = _bh_all(table['p_cooccurrence'])
         table['cooccurrence_significant'] = table['q_cooccurrence'].le(alpha)
+        cooccurrence_columns = [c for c in table.columns if c != 'distance_status']
         distributions = {}
-        if mode == 'long':
+        distance_table = None
+        if mode == 'cooccurrence_distance':
             selected = (table['short_status'].eq('complete') & table['cooccurrence_significant']
                         if distance_filter else table['short_status'].isin(['complete', 'zero_observed_pairs']))
             selected &= table['observed_pairs'].gt(0)
             table['distance_status'] = 'not_selected_by_short_filter'
             table['distance_failed_transcripts'] = pd.Series([None]*len(table), dtype=object)
+            metric_names = ['mean','median','sd','min','max','q25','q75']
+            for column in ['distance_transcripts','distance_pairs','distance_KS_statistic','p_distance',
+                           'distance_shift_nt','null_distance_pairs'] + [
+                               f'{metric}_distance_{kind}_nt' for kind in ['observed','null'] for metric in metric_names]:
+                table[column] = np.nan
             distance_rows = table.index[selected].tolist()
             if verbose:
-                print(f'[KEA long] {len(distance_rows)} pairs selected for conditional distance tests', flush=True)
-            for count, row_index in enumerate(distance_rows, 1):
+                print(f'[KEA cooccurrence_distance] {len(distance_rows)} pairs selected for conditional distance tests', flush=True)
+            completed = 0
+            for row_index in table.index:
                 i, j = pair_indices[row_index]
                 a, b = counts[:, i], counts[:, j]
                 tids = np.flatnonzero((a > 0) & (b > 0))
+                table.loc[row_index, 'distance_transcripts'] = len(tids)
+                table.loc[row_index, 'distance_pairs'] = table.loc[row_index, 'observed_pairs']
+                if not len(tids):
+                    table.loc[row_index, 'distance_status'] = 'zero_observed_pairs'
+                    continue
+                max_distance = int(max(n_starts[t]-1 for t in tids))
+                observed_hist = np.zeros(max_distance+1, dtype=np.int64)
+                for t in tids:
+                    observed_hist += _distance_histogram(hits[i][int(t)], hits[j][int(t)], int(n_starts[t]), max_distance)
+                observed_summary = _histogram_summary(observed_hist)
+                n_pairs = observed_summary['n']
+                assert n_pairs == int(table.loc[row_index, 'observed_pairs'])
+                for metric in metric_names:
+                    table.loc[row_index, f'{metric}_distance_observed_nt'] = observed_summary[metric]
+                if not selected.loc[row_index]:
+                    continue
                 pools, insufficient = {}, []
                 for t in tids:
                     pool = starts[t][(codes[t] != word_codes[i]) & (codes[t] != word_codes[j])]
@@ -4217,17 +4280,10 @@ class KEA():
                         insufficient.append(ids[t])
                     else:
                         pools[int(t)] = pool
-                table.loc[row_index, 'distance_transcripts'] = len(tids)
                 if insufficient:
                     table.loc[row_index, 'distance_status'] = 'insufficient_background_in_transcript'
                     table.loc[row_index, 'distance_failed_transcripts'] = json.dumps(insufficient)
                     continue
-                max_distance = int(max(n_starts[t]-1 for t in tids))
-                observed_hist = np.zeros(max_distance+1, dtype=np.int64)
-                for t in tids:
-                    observed_hist += _distance_histogram(hits[i][int(t)], hits[j][int(t)], int(n_starts[t]), max_distance)
-                n_pairs = int(observed_hist.sum())
-                assert n_pairs == int(table.loc[row_index, 'observed_pairs'])
                 entropy = [int(seed), len(words[0]), word_codes[i] & 0xffffffff, word_codes[i] >> 32,
                            word_codes[j] & 0xffffffff, word_codes[j] >> 32]
                 streams = np.random.SeedSequence(entropy).spawn(3)
@@ -4247,14 +4303,17 @@ class KEA():
                     null_means[trial] = np.dot(axis, sampled_hist)/n_pairs
                 tolerance = 100*np.finfo(float).eps*max(1, abs(observed_statistic))
                 pvalue = (1+int(np.count_nonzero(null_statistics >= observed_statistic-tolerance)))/(n_resamples+1)
-                observed_mean = float(np.dot(axis, observed_hist)/n_pairs)
-                reference_mean = float(np.dot(axis, reference_hist)/reference_hist.sum())
+                random_summary = _histogram_summary(reference_hist)
+                observed_mean, reference_mean = observed_summary['mean'], random_summary['mean']
                 table.loc[row_index, 'distance_status'] = 'complete'
                 table.loc[row_index, 'distance_pairs'] = n_pairs
                 table.loc[row_index, 'distance_KS_statistic'] = observed_statistic
                 table.loc[row_index, 'p_distance'] = pvalue
                 table.loc[row_index, 'mean_distance_observed_nt'] = observed_mean
                 table.loc[row_index, 'mean_distance_null_nt'] = reference_mean
+                for metric in metric_names:
+                    table.loc[row_index, f'{metric}_distance_null_nt'] = random_summary[metric]
+                table.loc[row_index, 'null_distance_pairs'] = random_summary['n']
                 table.loc[row_index, 'distance_shift_nt'] = observed_mean-reference_mean
                 pair = (words[i], words[j])
                 if directory is not None:
@@ -4270,13 +4329,19 @@ class KEA():
                 if store_null:
                     random_statistics.setdefault(pair, {}).update(distance_KS=null_statistics, distance_mean_nt=null_means)
                 if verbose:
-                    print(f'[KEA long] {count}/{len(distance_rows)} {words[i]}/{words[j]}: {n_pairs} distances, p={pvalue:.6g}', flush=True)
+                    completed += 1
+                    print(f'[KEA cooccurrence_distance] {completed}/{len(distance_rows)} {words[i]}/{words[j]}: {n_pairs} distances, p={pvalue:.6g}', flush=True)
             if 'p_distance' not in table:
                 table['p_distance'] = np.nan
             table['q_distance'] = np.nan
             if distance_rows:
                 table.loc[distance_rows, 'q_distance'] = _bh_all(table.loc[distance_rows, 'p_distance'])
             table['distance_significant'] = table['q_distance'].le(alpha)
+            distance_columns = ['kmer_a','kmer_b','n_cooccurring_transcripts',
+                                'p_cooccurrence','q_cooccurrence','cooccurrence_significant'] + [
+                                    c for c in table if c not in cooccurrence_columns]
+            distance_table = table.loc[:,distance_columns].copy()
+        cooccurrence_table = table.loc[:,cooccurrence_columns].rename(columns={'short_status':'cooccurrence_status'}).copy()
         tx_counts = pd.DataFrame(counts, index=pd.Index(ids, name='transcript'), columns=words)
         positions = {word:{ids[t]:p for t,p in hits[i].items()} for i,word in enumerate(words)}
         settings['elapsed_seconds'] = round(time.time()-started, 3)
@@ -4286,7 +4351,7 @@ class KEA():
         figures = []
         if plot:
             import matplotlib.pyplot as plt
-            if mode == 'long' and distributions:
+            if mode == 'cooccurrence_distance' and distributions:
                 candidates = table[table.distance_status.eq('complete')].sort_values(['q_distance','p_distance'])
                 for _, row in candidates.head(top_n).iterrows():
                     pair = row.kmer_a,row.kmer_b
@@ -4299,13 +4364,13 @@ class KEA():
                     fig,ax = plt.subplots(figsize=(6,3.5))
                     ax.step(x,y,where='post',color='black',label='Observed A-B')
                     ax.step(x,z,where='post',color='gray',label='Random windows')
-                    ax.set(xlabel='Center-to-center distance (nt)', ylabel='Cumulative fraction',
+                    ax.set(xlabel='Absolute start-to-start distance (nt)', ylabel='Cumulative fraction',
                            title=f'{pair[0]} / {pair[1]} — q={row.q_distance:.3g}')
                     ax.legend();fig.tight_layout();figures.append(fig)
                     if directory is not None:
                         fig.savefig(directory/f'distance_{pair[0]}__{pair[1]}.pdf')
                     plt.show()
-            elif mode == 'short':
+            elif mode == 'cooccurrence':
                 display = table[table.short_status.eq('complete')].sort_values(['q_cooccurrence','p_cooccurrence']).head(top_n)
                 if len(display):
                     fig,ax = plt.subplots(figsize=(max(5,min(12,.7*len(display)+2)),3.5))
@@ -4318,6 +4383,9 @@ class KEA():
         settings['state'] = 'complete'
         if directory is not None:
             table.to_csv(directory/'pair_tests.tsv',sep='\t',index=False)
+            cooccurrence_table.to_csv(directory/'cooccurrence.tsv',sep='\t',index=False)
+            if distance_table is not None:
+                distance_table.to_csv(directory/'cooccurrence_distance.tsv',sep='\t',index=False)
             tx_counts.to_csv(directory/'transcript_counts.tsv.gz',sep='\t',compression='gzip')
             import gzip
             with gzip.open(directory/'positions.tsv.gz','wt') as stream:
@@ -4330,11 +4398,17 @@ class KEA():
                 for pair,values in random_statistics.items():np.savez_compressed(null_dir/f'{pair[0]}__{pair[1]}.npz',**values)
             (directory/'settings.json').write_text(json.dumps(settings,indent=2)+'\n')
             (directory/'distributions.json').write_text(json.dumps({'|'.join(pair):path for pair,path in distributions.items()},indent=2)+'\n')
-        result = dict(pairs=table, transcript_counts=tx_counts, positions=positions,
+        for frame in [cooccurrence_table,distance_table]:
+            if frame is not None:
+                frame.attrs.update(development_status='work_in_progress', mode=mode,
+                                   output_dir=None if directory is None else str(directory))
+        result = dict(pairs=table, cooccurrence=cooccurrence_table, distances=distance_table,
+                      transcript_counts=tx_counts, positions=positions,
                       distributions=distributions, null_statistics=random_statistics,
                       settings=settings, output_dir=None if directory is None else str(directory), figures=figures)
         self.cooccurrence_results = result
-        return result
+        return cooccurrence_table if distance_table is None else (cooccurrence_table,distance_table)
+
 
 
     # def ContaminationAnalysis(

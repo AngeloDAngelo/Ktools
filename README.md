@@ -129,7 +129,7 @@ K-RBP also creates `analysis.kmer_protein_scores` by default: original 7-mer row
 
 ## Experimental: co-occurrence (WORK IN PROGRESS)
 
-`KEA.cooccurrence(mode="short" | "long")` tests transcript-level motif
+`KEA.cooccurrence(mode="cooccurrence" | "cooccurrence_distance")` tests transcript-level motif
 co-occurrence and distances against random windows sampled without replacement.
 The entire implementation is inside the KEA class; import KEA as usual.
 **Biological validation is pending.** Technical tests do not establish readiness
