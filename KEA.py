@@ -3899,6 +3899,444 @@ class KEA():
         self.kmer_cluster_map = kmer_cluster_map
         return kmer_cluster_map
 
+
+    def cooccurrence(
+        self, kmers=None, mode='short', *, species=None, methods=('delta_median', 'stat_log2fc'),
+        fasta_file=None, n_resamples=999, n_reference=99, alpha=0.05, seed=42,
+        distance_filter=True, save=True, output_dir=None, store_null=False,
+        plot=False, top_n=6, verbose=True,
+    ):
+        """WORK IN PROGRESS: experimental co-occurrence, pending biological validation.
+
+        Test all unordered pairs of enriched k-mers against random non-motif windows.
+
+        short: statistic = sum_t count(A,t)*count(B,t). Random windows are sampled
+        uniformly without replacement across all valid reference windows, excluding
+        windows equal to A or B. Their total counts match observed A and B counts.
+        Thus TX assignment is length-weighted and may vary; fixing TX counts would
+        make this statistic constant.
+
+        long: run short first, then (by default) retain pairs with short FDR<=alpha.
+        In each co-occurring TX, sample distinct background windows matching BOTH
+        observed counts in that TX. Compute ALL Cartesian A-B distances. Compare
+        the observed distance CDF to an independent random reference CDF with a
+        Monte Carlo-calibrated KS statistic. No iid KS p-value is used.
+
+        Distances are absolute center-to-center nt distances; for equal k they equal
+        absolute start-coordinate distances. Coordinates are 0-based, half-open.
+        Different starts may have overlapping windows; identical starts cannot be
+        reused in the same simulation. Scanning is on input transcript orientation.
+
+        kmers=None uses the strict intersection of the selected methods in the most
+        recent self.KEA_results[species or 'input']; an empty method stays empty.
+        Otherwise supply KEA_motifs explicitly. Only one common k (1..31) is supported.
+
+        Returns dict: pairs (all pair tests/statuses), transcript_counts (TX x k-mer),
+        positions (word -> TX -> starts), distributions (long pair -> npz path or
+        histogram DataFrame), null_statistics (if requested), settings, output_dir,
+        figures. Long filters on pairs, never on a claimed significance of one TX.
+
+        save=True creates a fresh Cooccurrence/<species>/<mode>/run_* directory;
+        no previous result or enrichment file is overwritten. No discovery rerun.
+        Empirical p=(1+number of null statistics >= observed)/(n_resamples+1).
+        FDR is BH across all short pairs and, separately, all distance-selected pairs.
+        These are random-window associations, not evidence of physical interaction.
+        """
+        from pathlib import Path
+        from itertools import combinations
+        import hashlib
+        import json
+        import math
+        import tempfile
+        import time
+
+        import numpy as np
+        import pandas as pd
+        from Bio import SeqIO
+        from scipy.signal import correlate
+        from statsmodels.stats.multitest import multipletests
+
+        VERSION = '1.0.0'
+
+
+        def _sha(path):
+            digest = hashlib.sha256()
+            with Path(path).open('rb') as stream:
+                for block in iter(lambda: stream.read(1024*1024), b''):
+                    digest.update(block)
+            return digest.hexdigest()
+
+
+        def _encode(word):
+            value = 0
+            for base in word:
+                value = 4*value + 'ACGT'.index(base)
+            return value
+
+
+        def _scan(fasta, words):
+            """Scan overlapping forward-strand occurrences and retain valid start sites."""
+            sequences = {}
+            for record in SeqIO.parse(str(fasta), 'fasta'):
+                if record.id in sequences:
+                    raise ValueError(f'Duplicate FASTA ID: {record.id}')
+                sequences[record.id] = str(record.seq).upper().replace('U', 'T')
+            if not sequences:
+                raise ValueError('Empty reference FASTA.')
+            ids = sorted(sequences)
+            k = len(words[0])
+            weights = np.array([1 << (2*i) for i in range(k-1, -1, -1)], dtype=np.uint64)
+            word_codes = np.array([_encode(w) for w in words], dtype=np.uint64)
+            code_dtype = np.min_scalar_type((1 << (2*k))-1)
+            alphabet = np.full(256, 4, dtype=np.uint8)
+            alphabet[np.frombuffer(b'ACGT', dtype=np.uint8)] = np.arange(4)
+            lookup = None
+            if k <= 10:
+                lookup = np.full(1 << (2*k), -1, dtype=np.int32)
+                lookup[word_codes.astype(np.int64)] = np.arange(len(words))
+            starts, codes, lengths = [], [], []
+            occurrences = [dict() for _ in words]
+            counts = np.zeros((len(ids), len(words)), dtype=np.int64)
+            for t, name in enumerate(ids):
+                seq = sequences.pop(name)
+                length = len(seq)
+                lengths.append(length)
+                if length < k:
+                    starts.append(np.array([], dtype=np.int64))
+                    codes.append(np.array([], dtype=code_dtype))
+                    continue
+                bases = alphabet[np.frombuffer(seq.encode('ascii'), dtype=np.uint8)]
+                windows = np.lib.stride_tricks.sliding_window_view(bases, k)
+                valid = np.all(windows < 4, axis=1)
+                positions = np.flatnonzero(valid).astype(np.int32 if length < 2**31 else np.int64)
+                encoded = (windows[valid].astype(np.uint64) @ weights).astype(code_dtype)
+                starts.append(positions)
+                codes.append(encoded)
+                if lookup is not None:
+                    matched = lookup[encoded.astype(np.int64)]
+                else:
+                    insertion = np.searchsorted(word_codes, encoded)
+                    matched = np.full(len(encoded), -1, dtype=np.int32)
+                    inside = insertion < len(word_codes)
+                    where = np.flatnonzero(inside)
+                    good = where[word_codes[insertion[where]] == encoded[where]]
+                    matched[good] = insertion[good]
+                for i in np.unique(matched[matched >= 0]):
+                    found = positions[matched == i]
+                    occurrences[int(i)][t] = found
+                    counts[t, int(i)] = len(found)
+            valid_counts = np.array([len(p) for p in starts], dtype=np.int64)
+            if not valid_counts.sum():
+                raise ValueError('No complete A/C/G/T k-mer windows in the FASTA.')
+            return ids, np.array(lengths), starts, codes, occurrences, counts, valid_counts
+
+
+        def _short_null(eligible, n_a, n_b, n_resamples, rng):
+            """Uniform distinct windows, preserving global motif counts and TX lengths."""
+            eligible = np.asarray(eligible, dtype=np.int64)
+            total = int(eligible.sum())
+            if total < n_a+n_b:
+                raise ValueError('Insufficient distinct background windows.')
+            samples = np.empty(n_resamples, dtype=np.int64)
+            # Count sampling is exactly equivalent to sampling distinct window ranks.
+            use_counts = n_a+n_b > 4*len(eligible) and total < 10**9
+            cumulative = np.cumsum(eligible)
+            for b in range(n_resamples):
+                if use_counts:
+                    a = rng.multivariate_hypergeometric(eligible, n_a)
+                    c = rng.multivariate_hypergeometric(eligible-a, n_b)
+                else:
+                    ranks = rng.choice(total, size=n_a+n_b, replace=False)
+                    tx = np.searchsorted(cumulative, ranks, side='right')
+                    a = np.bincount(tx[:n_a], minlength=len(eligible))
+                    c = np.bincount(tx[n_a:], minlength=len(eligible))
+                samples[b] = np.dot(a, c)
+            return samples
+
+
+        def _distance_histogram(a, b, n_starts, max_distance):
+            """All |center_A-center_B| distances, without subsampling site pairs."""
+            n_pairs = len(a)*len(b)
+            hist = np.zeros(max_distance+1, dtype=np.int64)
+            if not n_pairs:
+                return hist
+            # FFT computes the same all-pairs histogram when explicit outer products
+            # would be more expensive. Integer counts are checked after rounding.
+            if n_pairs > max(4096, 4*n_starts*math.log2(n_starts+1)):
+                x = np.bincount(a, minlength=n_starts)
+                y = np.bincount(b, minlength=n_starts)
+                corr = np.rint(correlate(y, x, mode='full', method='fft')).astype(np.int64)
+                center = n_starts-1
+                hist[0] = max(0, int(corr[center]))
+                n = min(max_distance, n_starts-1)
+                hist[1:n+1] = np.maximum(0, corr[center+1:center+n+1]+corr[center-n:center][::-1])
+                if int(hist.sum()) == n_pairs:
+                    return hist
+                hist.fill(0)  # Exact bounded-memory fallback if FFT rounding disagrees.
+            chunk = max(1, 1_000_000//len(b))
+            for first in range(0, len(a), chunk):
+                distances = np.abs(np.asarray(a[first:first+chunk], dtype=np.int64)[:, None]-np.asarray(b, dtype=np.int64))
+                hist += np.bincount(distances.ravel(), minlength=max_distance+1)
+            return hist
+
+
+        def _random_distances(pools, counts_a, counts_b, n_starts, max_distance, rng):
+            hist = np.zeros(max_distance+1, dtype=np.int64)
+            for t, pool in pools.items():
+                n_a, n_b = int(counts_a[t]), int(counts_b[t])
+                chosen = rng.choice(pool, size=n_a+n_b, replace=False)
+                hist += _distance_histogram(chosen[:n_a], chosen[n_a:], int(n_starts[t]), max_distance)
+            return hist
+
+
+        def _bh_all(values):
+            """Retain technical NA; include their hypotheses in the correction family."""
+            values = np.asarray(values, dtype=float)
+            finite = np.isfinite(values)
+            adjusted = multipletests(np.where(finite, values, 1.0), method='fdr_bh')[1]
+            adjusted[~finite] = np.nan
+            return adjusted
+
+
+        started = time.time()
+        if mode not in {'short', 'long'}:
+            raise ValueError("mode must be 'short' or 'long'.")
+        for name, number in [('n_resamples', n_resamples), ('n_reference', n_reference), ('top_n', top_n)]:
+            if isinstance(number, bool) or int(number) != number or number < 1:
+                raise ValueError(f'{name} must be a positive integer.')
+        n_resamples, n_reference, top_n = map(int, (n_resamples, n_reference, top_n))
+        if isinstance(seed, bool) or int(seed) != seed or seed < 0:
+            raise ValueError('seed must be a nonnegative integer.')
+        if not 0 < alpha < 1:
+            raise ValueError('alpha must lie between 0 and 1.')
+        key = species or 'input'
+        selection = None
+        if kmers is None:
+            state = (getattr(self, 'KEA_results', None) or {}).get(key, {})
+            methods = tuple(methods)
+            if not methods or any(m not in state or 'enriched' not in state[m] for m in methods):
+                raise ValueError('Run ExtractKmers for the requested methods/species, or pass kmers explicitly.')
+            groups = [set(state[m]['enriched']) for m in methods]
+            kmers = set.intersection(*groups)
+            selection = {'methods':list(methods), 'rule':'strict intersection of most recent stored enriched sets'}
+        words = sorted({str(w).strip().upper().replace('U', 'T') for w in kmers})
+        if len(words) < 2 or any(not w or set(w)-set('ACGT') for w in words):
+            raise ValueError('Provide at least two distinct A/C/G/T enriched k-mers.')
+        if len({len(w) for w in words}) != 1 or not 1 <= len(words[0]) <= 31:
+            raise ValueError('All k-mers must have the same length, between 1 and 31.')
+        if fasta_file is None:
+            fasta_file = (self.reference_fasta if key == 'input' else
+                          getattr(self, 'combined_fasta_by_species', {}).get(f'{key}_ref'))
+        if fasta_file is None or not Path(fasta_file).is_file():
+            raise FileNotFoundError(f'Reference FASTA not found: {fasta_file}')
+        fasta_file = Path(fasta_file).resolve()
+        source_sha = _sha(fasta_file)
+        ids, lengths, starts, codes, hits, counts, valid = _scan(fasta_file, words)
+        n_starts = np.maximum(0, lengths-len(words[0])+1)
+        word_codes = [_encode(w) for w in words]
+        n_tests = len(words)*(len(words)-1)//2
+        settings = dict(state='running', development_status='work_in_progress', version=VERSION, mode=mode, species=key, kmers=words, selection=selection,
+                        reference_fasta=str(fasta_file), reference_sha256=source_sha,
+                        n_transcripts=len(ids), valid_windows=int(valid.sum()),
+                        n_resamples=n_resamples, n_reference=n_reference, p_min=1/(n_resamples+1),
+                        alpha=alpha, seed=int(seed), distance_filter=bool(distance_filter),
+                        pairs_tested=n_tests, sampling='uniform distinct start sites without replacement',
+                        excluded_random_words='current pair A and B only',
+                        short_null='global observed A/B totals; length-weighted TX assignments',
+                        long_null='observed A/B counts in each co-occurring TX preserved',
+                        distance='all Cartesian pairs, absolute center-to-center nt',
+                        numpy_version=np.__version__, pandas_version=pd.__version__)
+        directory = None
+        if save:
+            base = Path(output_dir) if output_dir is not None else Path(self.dir_out)/'Cooccurrence'/key/mode
+            base.mkdir(parents=True, exist_ok=True)
+            directory = Path(tempfile.mkdtemp(prefix='run_', dir=base))
+            (directory/'distributions').mkdir()
+            (directory/'settings.json').write_text(json.dumps(settings, indent=2)+'\n')
+        if verbose:
+            print(f'[KEA cooccurrence] {len(words)} k-mers; {n_tests} pairs; {len(ids)} TX; B={n_resamples}; minimum p={1/(n_resamples+1):.6g}', flush=True)
+        records, random_statistics = [], {}
+        pair_indices = list(combinations(range(len(words)), 2))
+        for number, (i, j) in enumerate(pair_indices, 1):
+            a, b = counts[:, i], counts[:, j]
+            n_a, n_b = int(a.sum()), int(b.sum())
+            if n_a*n_b > np.iinfo(np.int64).max:
+                raise OverflowError('Pair count exceeds int64 capacity.')
+            observed = int(np.dot(a, b))
+            eligible = valid-a-b
+            pool_size = int(eligible.sum())
+            n_both = int(np.count_nonzero((a > 0) & (b > 0)))
+            theoretical = (n_a*n_b*float(np.dot(eligible, eligible-1))/(pool_size*(pool_size-1))
+                           if pool_size > 1 else 0.0)
+            row = dict(kmer_a=words[i], kmer_b=words[j], n_a=n_a, n_b=n_b,
+                       n_cooccurring_transcripts=n_both, observed_pairs=observed,
+                       eligible_random_windows=pool_size, expected_pairs_analytic=theoretical,
+                       null_mean_pairs=np.nan, null_sd_pairs=np.nan, pair_enrichment=np.nan,
+                       p_cooccurrence=np.nan, short_status='pending', distance_status='not_requested')
+            if pool_size < n_a+n_b:
+                row['short_status'] = 'insufficient_background_windows'
+            elif observed == 0:
+                row.update(short_status='zero_observed_pairs', p_cooccurrence=1.0,
+                           null_mean_pairs=theoretical, pair_enrichment=0.0 if theoretical else np.nan)
+            else:
+                entropy = [int(seed), len(words[0]), word_codes[i] & 0xffffffff, word_codes[i] >> 32,
+                           word_codes[j] & 0xffffffff, word_codes[j] >> 32]
+                rng = np.random.default_rng(np.random.SeedSequence(entropy).spawn(3)[0])
+                null = _short_null(eligible, n_a, n_b, n_resamples, rng)
+                mean = float(null.mean())
+                row.update(short_status='complete', null_mean_pairs=mean,
+                           null_sd_pairs=float(null.std(ddof=1)) if n_resamples > 1 else np.nan,
+                           pair_enrichment=observed/mean if mean else np.inf,
+                           p_cooccurrence=(1+int(np.count_nonzero(null >= observed)))/(n_resamples+1))
+                if store_null:
+                    random_statistics[(words[i], words[j])] = {'cooccurrence':null}
+            records.append(row)
+            if verbose and (number == n_tests or number % max(1, n_tests//20) == 0):
+                print(f'[KEA short] {number}/{n_tests}', flush=True)
+        table = pd.DataFrame(records)
+        table['q_cooccurrence'] = _bh_all(table['p_cooccurrence'])
+        table['cooccurrence_significant'] = table['q_cooccurrence'].le(alpha)
+        distributions = {}
+        if mode == 'long':
+            selected = (table['short_status'].eq('complete') & table['cooccurrence_significant']
+                        if distance_filter else table['short_status'].isin(['complete', 'zero_observed_pairs']))
+            selected &= table['observed_pairs'].gt(0)
+            table['distance_status'] = 'not_selected_by_short_filter'
+            table['distance_failed_transcripts'] = pd.Series([None]*len(table), dtype=object)
+            distance_rows = table.index[selected].tolist()
+            if verbose:
+                print(f'[KEA long] {len(distance_rows)} pairs selected for conditional distance tests', flush=True)
+            for count, row_index in enumerate(distance_rows, 1):
+                i, j = pair_indices[row_index]
+                a, b = counts[:, i], counts[:, j]
+                tids = np.flatnonzero((a > 0) & (b > 0))
+                pools, insufficient = {}, []
+                for t in tids:
+                    pool = starts[t][(codes[t] != word_codes[i]) & (codes[t] != word_codes[j])]
+                    if len(pool) < int(a[t]+b[t]):
+                        insufficient.append(ids[t])
+                    else:
+                        pools[int(t)] = pool
+                table.loc[row_index, 'distance_transcripts'] = len(tids)
+                if insufficient:
+                    table.loc[row_index, 'distance_status'] = 'insufficient_background_in_transcript'
+                    table.loc[row_index, 'distance_failed_transcripts'] = json.dumps(insufficient)
+                    continue
+                max_distance = int(max(n_starts[t]-1 for t in tids))
+                observed_hist = np.zeros(max_distance+1, dtype=np.int64)
+                for t in tids:
+                    observed_hist += _distance_histogram(hits[i][int(t)], hits[j][int(t)], int(n_starts[t]), max_distance)
+                n_pairs = int(observed_hist.sum())
+                assert n_pairs == int(table.loc[row_index, 'observed_pairs'])
+                entropy = [int(seed), len(words[0]), word_codes[i] & 0xffffffff, word_codes[i] >> 32,
+                           word_codes[j] & 0xffffffff, word_codes[j] >> 32]
+                streams = np.random.SeedSequence(entropy).spawn(3)
+                rng_reference, rng_test = (np.random.default_rng(streams[z]) for z in [1, 2])
+                reference_hist = np.zeros(max_distance+1, dtype=np.float64)
+                for _ in range(n_reference):
+                    reference_hist += _random_distances(pools, a, b, n_starts, max_distance, rng_reference)
+                null_cdf = np.cumsum(reference_hist)/reference_hist.sum()
+                observed_cdf = np.cumsum(observed_hist)/n_pairs
+                observed_statistic = float(np.max(np.abs(observed_cdf-null_cdf)))
+                null_statistics, null_means = np.empty(n_resamples), np.empty(n_resamples)
+                axis = np.arange(max_distance+1, dtype=float)
+                for trial in range(n_resamples):
+                    sampled_hist = _random_distances(pools, a, b, n_starts, max_distance, rng_test)
+                    assert int(sampled_hist.sum()) == n_pairs
+                    null_statistics[trial] = np.max(np.abs(np.cumsum(sampled_hist)/n_pairs-null_cdf))
+                    null_means[trial] = np.dot(axis, sampled_hist)/n_pairs
+                tolerance = 100*np.finfo(float).eps*max(1, abs(observed_statistic))
+                pvalue = (1+int(np.count_nonzero(null_statistics >= observed_statistic-tolerance)))/(n_resamples+1)
+                observed_mean = float(np.dot(axis, observed_hist)/n_pairs)
+                reference_mean = float(np.dot(axis, reference_hist)/reference_hist.sum())
+                table.loc[row_index, 'distance_status'] = 'complete'
+                table.loc[row_index, 'distance_pairs'] = n_pairs
+                table.loc[row_index, 'distance_KS_statistic'] = observed_statistic
+                table.loc[row_index, 'p_distance'] = pvalue
+                table.loc[row_index, 'mean_distance_observed_nt'] = observed_mean
+                table.loc[row_index, 'mean_distance_null_nt'] = reference_mean
+                table.loc[row_index, 'distance_shift_nt'] = observed_mean-reference_mean
+                pair = (words[i], words[j])
+                if directory is not None:
+                    path = directory/'distributions'/f'{words[i]}__{words[j]}.npz'
+                    np.savez_compressed(path, distance_nt=axis.astype(np.int64), observed_count=observed_hist,
+                                        random_expected_count=reference_hist/n_reference,
+                                        observed_cdf=observed_cdf, random_cdf=null_cdf,
+                                        transcript_ids=np.array([ids[t] for t in tids]))
+                    distributions[pair] = str(path)
+                else:
+                    distributions[pair] = pd.DataFrame(dict(distance_nt=axis.astype(np.int64), observed_count=observed_hist,
+                        random_expected_count=reference_hist/n_reference, observed_cdf=observed_cdf, random_cdf=null_cdf))
+                if store_null:
+                    random_statistics.setdefault(pair, {}).update(distance_KS=null_statistics, distance_mean_nt=null_means)
+                if verbose:
+                    print(f'[KEA long] {count}/{len(distance_rows)} {words[i]}/{words[j]}: {n_pairs} distances, p={pvalue:.6g}', flush=True)
+            if 'p_distance' not in table:
+                table['p_distance'] = np.nan
+            table['q_distance'] = np.nan
+            if distance_rows:
+                table.loc[distance_rows, 'q_distance'] = _bh_all(table.loc[distance_rows, 'p_distance'])
+            table['distance_significant'] = table['q_distance'].le(alpha)
+        tx_counts = pd.DataFrame(counts, index=pd.Index(ids, name='transcript'), columns=words)
+        positions = {word:{ids[t]:p for t,p in hits[i].items()} for i,word in enumerate(words)}
+        settings['elapsed_seconds'] = round(time.time()-started, 3)
+        settings['source_unchanged'] = _sha(fasta_file) == source_sha
+        if not settings['source_unchanged']:
+            raise RuntimeError('Reference FASTA changed during co-occurrence analysis; results not saved.')
+        figures = []
+        if plot:
+            import matplotlib.pyplot as plt
+            if mode == 'long' and distributions:
+                candidates = table[table.distance_status.eq('complete')].sort_values(['q_distance','p_distance'])
+                for _, row in candidates.head(top_n).iterrows():
+                    pair = row.kmer_a,row.kmer_b
+                    data = distributions[pair]
+                    if isinstance(data,str):
+                        with np.load(data, allow_pickle=False) as saved:
+                            x, y, z = saved['distance_nt'], saved['observed_cdf'], saved['random_cdf']
+                    else:
+                        x,y,z = data.distance_nt,data.observed_cdf,data.random_cdf
+                    fig,ax = plt.subplots(figsize=(6,3.5))
+                    ax.step(x,y,where='post',color='black',label='Observed A-B')
+                    ax.step(x,z,where='post',color='gray',label='Random windows')
+                    ax.set(xlabel='Center-to-center distance (nt)', ylabel='Cumulative fraction',
+                           title=f'{pair[0]} / {pair[1]} — q={row.q_distance:.3g}')
+                    ax.legend();fig.tight_layout();figures.append(fig)
+                    if directory is not None:
+                        fig.savefig(directory/f'distance_{pair[0]}__{pair[1]}.pdf')
+                    plt.show()
+            elif mode == 'short':
+                display = table[table.short_status.eq('complete')].sort_values(['q_cooccurrence','p_cooccurrence']).head(top_n)
+                if len(display):
+                    fig,ax = plt.subplots(figsize=(max(5,min(12,.7*len(display)+2)),3.5))
+                    ax.bar(np.arange(len(display)),display.pair_enrichment,color='lightgray',edgecolor='black')
+                    ax.axhline(1,color='black',linestyle='--',linewidth=1)
+                    ax.set_xticks(np.arange(len(display)));ax.set_xticklabels(display.kmer_a+'/'+display.kmer_b,rotation=45,ha='right')
+                    ax.set_ylabel('Observed / random mean pairs');fig.tight_layout();figures.append(fig)
+                    if directory is not None:fig.savefig(directory/'cooccurrence_top_pairs.pdf')
+                    plt.show()
+        settings['state'] = 'complete'
+        if directory is not None:
+            table.to_csv(directory/'pair_tests.tsv',sep='\t',index=False)
+            tx_counts.to_csv(directory/'transcript_counts.tsv.gz',sep='\t',compression='gzip')
+            import gzip
+            with gzip.open(directory/'positions.tsv.gz','wt') as stream:
+                stream.write('kmer\ttranscript\tstart\tend\n')
+                for word,found in positions.items():
+                    for name,sites in found.items():
+                        for p in sites:stream.write(f'{word}\t{name}\t{int(p)}\t{int(p)+len(word)}\n')
+            if store_null:
+                null_dir=directory/'null_statistics';null_dir.mkdir()
+                for pair,values in random_statistics.items():np.savez_compressed(null_dir/f'{pair[0]}__{pair[1]}.npz',**values)
+            (directory/'settings.json').write_text(json.dumps(settings,indent=2)+'\n')
+            (directory/'distributions.json').write_text(json.dumps({'|'.join(pair):path for pair,path in distributions.items()},indent=2)+'\n')
+        result = dict(pairs=table, transcript_counts=tx_counts, positions=positions,
+                      distributions=distributions, null_statistics=random_statistics,
+                      settings=settings, output_dir=None if directory is None else str(directory), figures=figures)
+        self.cooccurrence_results = result
+        return result
+
+
     # def ContaminationAnalysis(
     #     self,
     #     bed_cds_genomic: pd.DataFrame,
