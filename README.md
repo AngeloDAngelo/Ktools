@@ -125,12 +125,3 @@ Please cite **K-tools** using [this repository](https://github.com/AngeloDAngelo
 Copyright © 2026 Angelo D'Angelo. Original K-tools code, documentation and figures are licensed under [CC BY-NC 4.0](LICENSE): noncommercial reuse and modification are permitted under its attribution and other conditions. Third-party datasets and dependencies retain their own terms; see [NOTICE](NOTICE).
 
 K-RBP also creates `analysis.kmer_protein_scores` by default: original 7-mer rows × supplied protein/profile columns, containing the mean of three overlapping pentamer PEKA scores. Enrichment return values are unchanged. See [definitions and missing-score handling](docs/Module-parameters.md#original-k-mer-peka-score-table).
-
-
-## Experimental: co-occurrence (WORK IN PROGRESS)
-
-`KEA.cooccurrence(mode="cooccurrence" | "cooccurrence_distance")` tests transcript-level motif
-co-occurrence and distances against random windows sampled without replacement.
-The entire implementation is inside the KEA class; import KEA as usual.
-**Biological validation is pending.** Technical tests do not establish readiness
-for publication conclusions. See [experimental co-occurrence documentation](docs/Cooccurrence.md).

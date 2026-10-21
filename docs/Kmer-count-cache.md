@@ -43,7 +43,6 @@ print(analysis.kmers_count_cache['input'])
 ```
 
 The existing `None` return value and counting algorithm are unchanged.
-Only `KmersCountsTable` changes; no other KEA method, including co-occurrence,
-is modified. Eight technical tests cover exact counts, fresh-object reuse,
+Only `KmersCountsTable` changes; other KEA methods remain unchanged. Eight technical tests cover exact counts, fresh-object reuse,
 content-based invalidation, separate cache keys, override flags, corrupt
 caches, input mutation and identical FASTA rewrites.
