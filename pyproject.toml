@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cooccurrence = ["numba>=0.60,<1"]
 dev = ["pytest>=8,<10", "build>=1,<2"]
 
 [tool.setuptools]
@@ -29,3 +30,4 @@ ktools_resources = ["miR_Family_Info.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+

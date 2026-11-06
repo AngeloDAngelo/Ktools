@@ -32,7 +32,22 @@ from wordcloud import WordCloud
 import matplotlib as mpl
 import matplotlib.font_manager as fm
 from matplotlib_venn import venn2, venn3
-
+import gzip
+import re
+import tempfile
+import warnings
+from collections import defaultdict, Counter
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from Bio import SeqIO
+from scipy.stats import fisher_exact
+from statsmodels.stats.multitest import multipletests
+import json
+import re
+import tempfile
+from pathlib import Path
+import textwrap
 def LocalizeRangeInTx(table,annotation_file,tx_id_column,start_col,end_col):
     
     COLONNA_ID=tx_id_column#"ID"#"id1"
@@ -46,6 +61,7 @@ def LocalizeRangeInTx(table,annotation_file,tx_id_column,start_col,end_col):
     ### file info_sequences
 
     ## info file is located here ##
+    ## "/data01/common_files/utilities/ensembl/ens99/annotation/annotation_"+specie_file+"_"+genome+".txt"
 
     ### file output
 
@@ -901,7 +917,6 @@ class KEA():
             self.kmers_count_cache[species_key] = dict(state='computed_cache_disabled', table=None, metadata=None)
         self.kmers_count_table_by_species[species_key] = kmer_counts
 
-
     def KRS(
         self,
         reference,
@@ -1568,7 +1583,6 @@ class KEA():
 
         return self.KEA_results
 
-
         
     def KmerCorrelationWithScore(self, txids_and_score: pd.DataFrame, species=None, method="spearman", sign_emp_pval=0.05):
        
@@ -1661,911 +1675,6 @@ class KEA():
         fig = plt.gcf()
         fig.savefig(os.path.join(self.dir_out, f"{nome_logo}.pdf"))
         plt.close()
-
-
-    def AnnotateMiRNASeeds(self, kmers=None, source="KEA", reference=None, species=None, species_id=9606, plot=True, top_n=20, output_dir=None):
-
-        """Annotate RNA-oriented 7-mers against miRNA positions 2-8.
-
-        Exact target 7mer-m8 matches only, using reverse-complemented Seed+m8.
-        KEA defaults to the enriched delta_median/stat_log2fc intersection;
-        KRS defaults to its selected signature and target percentile scores.
-        source='manual' accepts explicit kmers without analysis scores.
-        No new miRNA-level hypothesis test or combined KEA score is computed.
-        """
-
-        import json
-        import re
-        import tempfile
-        from pathlib import Path
-
-        if source not in {"KEA", "KRS", "manual"}:
-            raise ValueError("source must be KEA, KRS or manual")
-        if not isinstance(top_n, (int, np.integer)) or top_n < 1:
-            raise ValueError("top_n must be a positive integer")
-        if output_dir is not None and Path(output_dir).exists():
-            raise FileExistsError("output_dir must be a new directory")
-        key = species or "input"
-        family = pd.read_csv(self.seed_family_file, sep="\t")
-        required = {"miR family", "Seed+m8", "Species ID", "MiRBase ID"}
-        if not required.issubset(family.columns):
-            raise ValueError(f"Family file requires columns: {sorted(required)}")
-        family = family.loc[pd.to_numeric(family["Species ID"], errors="coerce").eq(int(species_id))].copy()
-        if family.empty:
-            raise ValueError("No family records for selected species_id")
-        family["seed_rna"] = family["Seed+m8"].astype(str).str.upper().str.replace("T", "U", regex=False)
-        if not family.seed_rna.map(lambda s: bool(re.fullmatch("[ACGU]{7}", s))).all():
-            raise ValueError("Seed+m8 must contain canonical 7-nt seeds")
-        if "Mature sequence" in family:
-            mature = family["Mature sequence"].astype(str).str.upper().str.replace("T", "U", regex=False)
-            if not mature.str[1:8].eq(family.seed_rna).all():
-                raise ValueError("Seed+m8 does not match mature miRNA positions 2-8")
-
-        family["target_kmer"] = family.seed_rna.map(lambda s: str(Seq(s.replace("U", "T")).reverse_complement()))
-        family["target_rna"] = family.target_kmer.str.replace("T", "U", regex=False)
-
-        def names(series):
-            return ";".join(sorted(set(series.dropna().astype(str))))
-        aggregations = {"mirnas": ("MiRBase ID", names)}
-
-        if "MiRBase Accession" in family:
-            aggregations["accessions"] = ("MiRBase Accession", names)
-        annotations = family.groupby(["miR family", "seed_rna", "target_kmer", "target_rna"], as_index=False).agg(**aggregations)
-        annotations = annotations.rename(columns={"miR family": "mirna_family"})
-        scores = None
-        state = (self.KEA_results or {}).get(key, {})
-
-        if source == "KEA":
-            if not {"delta_median", "stat_log2fc"}.issubset(state):
-                raise ValueError("Run both delta_median and stat_log2fc before KEA annotation")
-            if kmers is None:
-                kmers = sorted(set(state["delta_median"]["enriched"]) & set(state["stat_log2fc"]["enriched"]))
-            delta = state["delta_median"]["all_kmers"]
-            stat = state["stat_log2fc"]["all_kmers"]
-            scores = delta[["delta_median"]].join(stat[[c for c in ["log2FoldChange", "PValue", "FDR", "bonf"] if c in stat]], how="outer")
-        elif source == "KRS":
-            krs = state.get("KRS")
-            if not isinstance(krs, dict):
-                raise ValueError("Run KRS before KRS annotation")
-            if reference is not None and reference != krs["reference"]:
-                raise ValueError("Stored KRS result belongs to a different reference; rerun KRS")
-            reference = krs["reference"]
-            if kmers is None:
-                kmers = krs["signature"]
-            scores = krs["kmer_ranks"].set_index("kmer")[["target_frequency", "target_rank_percentile", "selected_KRS"]]
-        elif kmers is None:
-            raise ValueError("Supply kmers for source=manual")
-        if isinstance(kmers, str):
-            kmers = [kmers]
-        words = list(dict.fromkeys(str(k).upper().replace("U", "T") for k in kmers))
-        if any(not re.fullmatch("[ACGT]{7}", k) for k in words):
-            raise ValueError("Query words must be canonical 7-mers; no automatic decomposition")
-        query = pd.DataFrame({"kmer": pd.Series(words, dtype=str)})
-        if scores is not None:
-            scores = scores.copy()
-            scores.index = scores.index.astype(str).str.upper().str.replace("U", "T", regex=False)
-            if not scores.index.is_unique:
-                raise ValueError("Analysis scores must have unique normalized k-mer rows")
-            query = query.merge(scores, left_on="kmer", right_index=True, how="left", validate="one_to_one")
-        matches = query.merge(annotations, left_on="kmer", right_on="target_kmer", how="inner", validate="one_to_many")
-        query["matched_family_count"] = query.kmer.map(matches.groupby("kmer").mirna_family.nunique()).fillna(0).astype(int)
-        figures = []
-        if plot and len(matches) and source != "manual":
-            import matplotlib.pyplot as plt
-            metrics = ["delta_median", "log2FoldChange"] if source == "KEA" else ["target_rank_percentile"]
-            sorting = "log2FoldChange" if source == "KEA" else "target_rank_percentile"
-            shown = matches.sort_values(sorting, ascending=False, na_position="last").head(top_n).copy()
-            shown["label"] = shown.mirna_family + " | " + shown.kmer
-            fig, axes = plt.subplots(1, len(metrics), figsize=(7*len(metrics), max(3, 0.35*len(shown)+1)), squeeze=False)
-            for ax, metric in zip(axes[0], metrics):
-                ax.barh(range(len(shown)), shown[metric], color="#4477AA")
-                ax.set_yticks(range(len(shown)), shown.label)
-                ax.invert_yaxis()
-                ax.set_xlabel(metric)
-                ax.set_title("Matched k-mer score (not family-level inference)")
-                if source == "KRS":
-                    ax.set_xlim(0, 1)
-            fig.tight_layout()
-            figures.append(fig)
-        base = Path(self.dir_out)
-        if output_dir is None:
-            base.mkdir(parents=True, exist_ok=True)
-            destination = Path(tempfile.mkdtemp(prefix="MiRNASeeds_", dir=base))
-        else:
-            destination = Path(output_dir)
-            destination.mkdir(parents=True, exist_ok=False)
-        query.to_csv(destination/"query_kmers.tsv", sep="\t", index=False)
-        matches.to_csv(destination/"seed_matches.tsv", sep="\t", index=False)
-        annotations.to_csv(destination/"family_seed_map.tsv", sep="\t", index=False)
-        for fig in figures:
-            fig.savefig(destination/"seed_scores.png", dpi=180, bbox_inches="tight")
-            fig.savefig(destination/"seed_scores.pdf", bbox_inches="tight")
-        settings = dict(family_file=str(self.seed_family_file), species_id=int(species_id), source=source,
-                        reference=reference, species=key, query_kmers=words,
-                        site_type="7mer-m8", seed_orientation="miRNA positions 2-8; reverse complement to target",
-                        plot=plot, top_n=top_n)
-        (destination/"settings.json").write_text(json.dumps(settings, indent=2))
-        result = dict(matches=matches, query=query, seed_map=annotations, figures=figures,
-                      settings=settings, output_dir=str(destination))
-        self.mirna_seed_annotation = result
-        return result
-
-    def K_CDS(
-    self, gtf_file=None, uniprot_dir=None,
-    kmers=None, method='stat_log2fc', species=None,
-    in_frame=False, background='shuffle', tracks=("unipLocCytopl","unipLocExtra","unipLocSignal","unipLocTransMemb",),
-    alpha=0.05, fdr_scope='global', split_blocks=True,
-    seed=42, output_dir=None, plot=True, max_domains=60,
-    ref_fasta=None, ctrl_fasta=None, *,
-    positional_enrichment=None, bed_feature=None,
-    recompute_positional=False, final_plots=None, rscript='Rscript',
-    frame_threshold=0.5, start_fraction=0.10, color_cap=2,
-    show_final=True):
-
-        """Run the original K-CDS analysis and the two final notebook panels.
-
-            Domain/frame tables and statistics are preserved. Only the final R panels are plotted.
-            final_plots defaults to plot. R, ComplexHeatmap and circlize are required
-            only for final panels. final_plots=False disables rendering; tables are still saved.
-            positional_enrichment accepts a TSV path or a DataFrame. When omitted,
-            search the last result directory, dir_out/K_CDS and dir_out for the TSV.
-            A supplied cache is validated and reused; it is never silently recomputed.
-            Missing positional data are computed automatically from existing BED and
-            metatranscript inputs, or from FASTA/GTF if those inputs are unavailable.
-            Previously computed per-k-mer EnrichmentAnalysis results are reused.
-            recompute_positional=True explicitly requests this positional calculation.
-            Frame/domain tests still compare reference with the chosen background.
-            """
-        import gzip
-        import shutil
-        import subprocess
-        import textwrap
-        import re
-        import tempfile
-        import warnings
-        from collections import defaultdict, Counter
-        from pathlib import Path
-        import numpy as np
-        import pandas as pd
-        from Bio import SeqIO
-        from scipy.stats import fisher_exact
-        from statsmodels.stats.multitest import multipletests
-        if gtf_file is None or uniprot_dir is None:
-            raise ValueError('Supply gtf_file and uniprot_dir for matching GRCh38 resources')
-        if background not in {'control', 'shuffle'}:
-            raise ValueError("background must be 'control' or 'shuffle'")
-        if fdr_scope not in {'global', 'kmer'} or not 0 < alpha < 1:
-            raise ValueError('Invalid fdr_scope or alpha')
-        if max_domains is not None and max_domains < 1:
-            raise ValueError('max_domains must be positive or None')
-        if output_dir is not None and Path(output_dir).exists():
-            raise FileExistsError(f'Refusing to overwrite existing directory: {output_dir}')
-        key = species or 'input'
-        if kmers is None:
-            try:
-                kmers = self.KEA_results[key][method]['enriched']
-            except (KeyError, TypeError):
-                raise ValueError('Run ExtractKmers first or supply kmers explicitly') from None
-        if isinstance(kmers, str):
-            kmers = [kmers]
-        kmers = list(dict.fromkeys((str(k).upper().replace('U', 'T') for k in kmers)))
-        if not kmers or any((not re.fullmatch('[ACGT]+', k) for k in kmers)):
-            raise ValueError('Supply at least one DNA/RNA k-mer without ambiguous bases')
-        if key != 'input':
-            raise ValueError('K-CDS supports the human input KEA object; species must be None or input')
-        if isinstance(tracks, str):
-            tracks = (tracks,)
-        allowed = {'unipDomain', 'unipInterest', 'unipStruct', 'unipLocTransMemb', 'unipLocExtra', 'unipLocSignal', 'unipLocCytopl', 'unipRepeat'}
-        if not tracks or not set(tracks) <= allowed:
-            raise ValueError('Unsupported track; use a UniProt feature track')
-
-        final_plots = bool(plot) if final_plots is None else bool(final_plots)
-        positional = None
-        positional_source = None
-        r_executable = None
-        if final_plots:
-            if len(kmers) < 2:
-                raise ValueError('At least two k-mers are required for the final clusters')
-            if not np.isfinite(color_cap) or color_cap <= 0:
-                raise ValueError('color_cap must be finite and positive')
-            if not np.isfinite(frame_threshold) or not 0 <= frame_threshold <= 1:
-                raise ValueError('frame_threshold must be between 0 and 1')
-            if not np.isfinite(start_fraction) or not 0 < start_fraction < 1:
-                raise ValueError('start_fraction must be between 0 and 1')
-            r_executable = shutil.which(str(rscript))
-            if r_executable is None:
-                raise RuntimeError('Rscript not found. Install R or set final_plots=False.')
-            probe = subprocess.run(
-                [r_executable, '--vanilla', '-e',
-                 'if (!all(vapply(c("ComplexHeatmap", "circlize"), requireNamespace, logical(1), quietly=TRUE))) stop("Install ComplexHeatmap and circlize")'],
-                capture_output=True, text=True
-            )
-            if probe.returncode:
-                raise RuntimeError('R dependency check failed:\n' + probe.stdout + probe.stderr)
-            source = positional_enrichment
-            if source is None and not recompute_positional:
-                # Only per-k-mer analyses are reusable: a pooled signature is not.
-                existing = getattr(self, 'enrichment', None)
-                memory_parts = []
-                if isinstance(existing, pd.DataFrame) and {'analysis','bin','log2_or'}.issubset(existing.columns):
-                    for kmer in kmers:
-                        part = existing.loc[existing['analysis'].eq(kmer + '_Enr_VS_Ctrl')].copy()
-                        if 'type_analysis' in part:
-                            part = part.loc[part['type_analysis'].eq('kmers')]
-                        if part.empty:
-                            continue
-                        # EnrichmentAnalysis appends results on repeated calls.
-                        part = part.drop_duplicates('bin', keep='last')
-                        cds_part = part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+')]
-                        if len(cds_part) < 2 or not np.isfinite(pd.to_numeric(cds_part['log2_or'], errors='coerce')).all():
-                            continue
-                        part['kmer'] = kmer
-                        if 'fdr' not in part:
-                            part['fdr'] = np.nan
-                        memory_parts.append(part[['kmer','bin','log2_or','fdr']])
-                if memory_parts:
-                    source = pd.concat(memory_parts, ignore_index=True)
-                    positional_source = 'self.enrichment: per-k-mer Enr/Ctrl results'
-                else:
-                    previous = getattr(self, 'k_cds', None)
-                    if isinstance(previous, dict) and isinstance(previous.get('positional_enrichment'), pd.DataFrame):
-                        source = previous['positional_enrichment']
-                    candidates = []
-                    if isinstance(previous, dict) and previous.get('output_dir'):
-                        candidates.append(Path(previous['output_dir']) / 'positional_enrichment.tsv')
-                    candidates.extend([
-                        Path(self.dir_out) / 'K_CDS' / 'positional_enrichment.tsv',
-                        Path(self.dir_out) / 'positional_enrichment.tsv'
-                    ])
-                    if source is None:
-                        source = next((path for path in candidates if path.is_file()), None)
-            if not recompute_positional and source is not None:
-                if isinstance(source, pd.DataFrame):
-                    positional = source.copy()
-                    positional_source = positional_source or 'supplied DataFrame'
-                else:
-                    cache = Path(source).expanduser()
-                    if not cache.is_file():
-                        raise FileNotFoundError(cache)
-                    positional = pd.read_csv(cache, sep='\t')
-                    positional_source = str(cache.resolve())
-                print('Reusing positional enrichment:', positional_source)
-
-        def txid(s):
-            return re.sub('\\.\\d+$', '', str(s))
-
-        def fasta(path):
-            result = {}
-            op = gzip.open if str(path).endswith('.gz') else open
-            with op(path, 'rt') as handle:
-                for rec in SeqIO.parse(handle, 'fasta'):
-                    name = txid(rec.id)
-                    if name in result:
-                        raise ValueError(f'Duplicate normalized FASTA transcript ID: {name}')
-                    result[name] = str(rec.seq).upper().replace('U', 'T')
-            return result
-        reference_path = ref_fasta if ref_fasta is not None else self.reference_fasta
-        control_path = ctrl_fasta if ctrl_fasta is not None else self.control_fasta
-        ref = fasta(reference_path)
-        ctrl = fasta(control_path) if background == 'control' else {}
-        if set(ref) & set(ctrl):
-            raise ValueError('Reference and control transcript sets must be disjoint')
-        seqs = {**ref, **ctrl}
-        if final_plots:
-            # Determine which per-k-mer profiles are missing/incomplete.
-            reusable = {}
-            if positional is not None:
-                required = {'kmer','bin','log2_or'}
-                if not required.issubset(positional.columns):
-                    raise ValueError('Positional input requires kmer, bin and log2_or')
-                positional = positional.copy()
-                positional['kmer'] = positional['kmer'].astype(str).str.upper().str.replace('U','T',regex=False)
-                if positional.duplicated(['kmer','bin']).any():
-                    raise ValueError('Duplicate positional k-mer/bin pairs')
-                for kmer in kmers:
-                    part = positional.loc[positional['kmer'].eq(kmer)].copy()
-                    cds_part = part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+')]
-                    if len(cds_part) >= 2 and np.isfinite(pd.to_numeric(cds_part['log2_or'],errors='coerce')).all():
-                        if 'fdr' not in part:
-                            part['fdr'] = np.nan
-                        reusable[kmer] = part[['kmer','bin','log2_or','fdr']]
-            # Require a shared, complete set of CDS bins.
-            expected_bins = set()
-            for part in reusable.values():
-                expected_bins.update(part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+'),'bin'])
-            meta = getattr(self,'metatx',None)
-            if isinstance(meta,pd.DataFrame) and 'name' in meta:
-                expected_bins.update(meta.loc[meta['name'].astype(str).str.fullmatch(r'CDS_\d+'),'name'])
-            reusable = {k:part for k,part in reusable.items()
-                        if set(part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+'),'bin']) == expected_bins}
-            missing = [k for k in kmers if k not in reusable]
-            if positional_enrichment is not None and not recompute_positional and missing:
-                raise ValueError('Explicit positional input is incomplete for: ' + ', '.join(missing))
-            if missing:
-                if any(len(kmer) != 7 for kmer in missing):
-                    raise ValueError('Automatic EnrichmentAnalysis positional counting uses k=7. Supply positional_enrichment for other word lengths.')
-                # Load full transcripts from both populations, even with shuffle.
-                full_sequences = {}
-                group_ids = []
-                for path in [reference_path,control_path]:
-                    ids = []
-                    op = gzip.open if str(path).endswith('.gz') else open
-                    with op(path,'rt') as handle:
-                        for rec in SeqIO.parse(handle,'fasta'):
-                            if rec.id in full_sequences:
-                                raise ValueError('Duplicate/disjoint FASTA ID problem: ' + rec.id)
-                            ids.append(rec.id)
-                            full_sequences[rec.id] = str(rec.seq).upper().replace('U','T')
-                    group_ids.append(ids)
-                ref_ids,ctrl_ids = group_ids
-                # Prefer the same metatranscript already used by the notebook.
-                if meta is None:
-                    candidates = list(Path(self.dir_out).glob('metatx*.bed'))
-                    valid_meta = []
-                    for path in candidates:
-                        table_meta = pd.read_csv(path,sep='\t')
-                        if {'chrom','start','end','name','score','strand'}.issubset(table_meta.columns):
-                            if table_meta['name'].astype(str).str.fullmatch(r'CDS_\d+').any():
-                                valid_meta.append((path,table_meta))
-                    if len(valid_meta) == 1:
-                        meta = valid_meta[0][1]
-                        print('Using saved metatranscript:',valid_meta[0][0])
-                if meta is None:
-                    # No previous metatranscript: build relative-position bins
-                    # from the matching GTF, using mean regional proportions.
-                    normalized_ids = {txid(name):name for name in full_sequences}
-                    if len(normalized_ids) != len(full_sequences):
-                        raise ValueError('Duplicate normalized FASTA IDs')
-                    annotations = defaultdict(lambda:{'exon':[],'CDS':[]})
-                    op = gzip.open if str(gtf_file).endswith('.gz') else open
-                    with op(gtf_file,'rt') as handle:
-                        for line in handle:
-                            if line.startswith('#'):
-                                continue
-                            fields = line.rstrip('\n').split('\t')
-                            if len(fields)!=9 or fields[2] not in {'exon','CDS'}:
-                                continue
-                            hit = re.search(r'transcript_id "([^"]+)"',fields[8])
-                            if not hit or txid(hit[1]) not in normalized_ids:
-                                continue
-                            model = annotations[normalized_ids[txid(hit[1])]]
-                            model['strand'] = fields[6]
-                            model[fields[2]].append((int(fields[3])-1,int(fields[4])))
-                    lengths = {}
-                    for name,sequence in full_sequences.items():
-                        model = annotations.get(name)
-                        if model is None or not model['exon'] or not model['CDS']:
-                            continue
-                        exons = sorted(set(model['exon']),reverse=model['strand']=='-')
-                        offsets,offset = [],0
-                        for lo,hi in exons:
-                            offsets.append((lo,hi,offset)); offset += hi-lo
-                        if offset != len(sequence):
-                            continue
-                        intervals = []
-                        for lo,hi in set(model['CDS']):
-                            for left,right,off in offsets:
-                                if left<=lo<hi<=right:
-                                    start = off+(lo-left if model['strand']=='+' else right-hi)
-                                    intervals.append((start,start+hi-lo)); break
-                        intervals = sorted(intervals)
-                        if len(intervals)!=len(set(model['CDS'])) or any(right!=left for (_,right),(left,_) in zip(intervals,intervals[1:])):
-                            continue
-                        cs,ce = intervals[0][0],intervals[-1][1]
-                        lengths[name] = (cs,ce-cs,len(sequence)-ce)
-                    if not lengths:
-                        raise ValueError('Cannot build metatranscript from the supplied FASTA/GTF')
-                    means = np.mean(list(lengths.values()),axis=0)
-                    n_bins = np.maximum(1,np.rint(100*means/means.sum()).astype(int)*3)
-                    meta_rows = []
-                    for name,region_lengths in lengths.items():
-                        offset = 0
-                        for label,size,count in zip(['5UTR','CDS','3UTR'],region_lengths,n_bins):
-                            for j in range(int(count)):
-                                lo = int(round(offset+j*size/count))
-                                hi = int(round(offset+(j+1)*size/count))
-                                if lo<hi:
-                                    meta_rows.append((name,lo,hi,label+'_'+str(j+1),1,'+'))
-                            offset += size
-                    meta = pd.DataFrame(meta_rows,columns=['chrom','start','end','name','score','strand'])
-                    print('Built metatranscript from FASTA/GTF:',n_bins.tolist())
-                self.metatx = meta
-                target_bins = set(meta.loc[meta['name'].astype(str).str.fullmatch(r'CDS_\d+'),'name'])
-                # Partial cached profiles must use the same binning as newly
-                # computed ones; recompute incompatible profiles as needed.
-                reusable = {k:part for k,part in reusable.items()
-                            if set(part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+'),'bin']) == target_bins}
-                missing = [k for k in kmers if k not in reusable]
-                # Use existing occurrence coordinates, or scan overlapping hits.
-                if bed_feature is not None:
-                    features = bed_feature.copy() if isinstance(bed_feature,pd.DataFrame) else pd.read_csv(bed_feature,sep='\t')
-                elif (Path(self.dir_out)/'kmers_bed.bed').is_file():
-                    features = pd.read_csv(Path(self.dir_out)/'kmers_bed.bed',sep='\t')
-                else:
-                    feature_rows = []
-                    for name,sequence in full_sequences.items():
-                        for kmer in missing:
-                            pos = sequence.find(kmer)
-                            while pos>=0:
-                                feature_rows.append((name,pos,pos+len(kmer),kmer,1,'+'))
-                                pos = sequence.find(kmer,pos+1)
-                    features = pd.DataFrame(feature_rows,columns=['chrom','start','end','name','score','strand'])
-                if not {'chrom','start','end','name','score','strand'}.issubset(features.columns):
-                    raise ValueError('Invalid k-mer BED table')
-                features['name'] = features['name'].astype(str).str.upper().str.replace('U','T',regex=False)
-                old_enrichment = getattr(self,'enrichment',None)
-                try:
-                    for kmer in missing:
-                        print('Computing missing positional profile:',kmer)
-                        piece = self.EnrichmentAnalysis(
-                            features.loc[features['name'].eq(kmer)].copy(), kmer,
-                            ref_ids,'Enr',ctrl_ids,'Ctrl',
-                            type_analysis='kmers',metatx_type='tx'
-                        ).copy()
-                        piece['kmer'] = kmer
-                        reusable[kmer] = piece[['kmer','bin','log2_or','fdr']]
-                finally:
-                    self.enrichment = old_enrichment
-                positional_source = (positional_source or '') + '; computed missing profiles with EnrichmentAnalysis'
-            positional = pd.concat([reusable[k] for k in kmers],ignore_index=True)
-            required = {'kmer', 'bin', 'log2_or'}
-            if not required.issubset(positional.columns):
-                raise ValueError('Positional columns missing: ' + str(sorted(required - set(positional.columns))))
-            if positional[['kmer', 'bin']].isna().any().any():
-                raise ValueError('Missing positional k-mer/bin identifiers')
-            positional['kmer'] = positional['kmer'].astype(str).str.upper().str.replace('U', 'T', regex=False)
-            positional['bin'] = positional['bin'].astype(str)
-            positional = positional.loc[positional['kmer'].isin(kmers)].copy()
-            if positional.duplicated(['kmer', 'bin']).any():
-                raise ValueError('Duplicate positional k-mer/bin pairs')
-            if set(positional['kmer']) != set(kmers):
-                raise ValueError('Positional data do not contain all selected k-mers')
-            positional['log2_or'] = pd.to_numeric(positional['log2_or'], errors='raise')
-            cds_rows = positional[positional['bin'].str.fullmatch(r'CDS_\d+', na=False)]
-            cds_bins = sorted(cds_rows['bin'].unique(), key=lambda b: int(b.split('_')[1]))
-            positional_matrix = cds_rows.pivot(index='kmer', columns='bin', values='log2_or').reindex(index=kmers, columns=cds_bins)
-            if len(cds_bins) < 2 or not np.isfinite(positional_matrix.to_numpy(dtype=float)).all():
-                raise ValueError('Need at least two CDS bins and a complete finite positional matrix')
-
-        models = defaultdict(lambda: {'exon': [], 'CDS': []})
-        op = gzip.open if str(gtf_file).endswith('.gz') else open
-        with op(gtf_file, 'rt') as handle:
-            for line in handle:
-                if line.startswith('#'):
-                    continue
-                f = line.rstrip('\n').split('\t')
-                if len(f) != 9 or f[2] not in {'exon', 'CDS'}:
-                    continue
-                match = re.search('transcript_id "([^"]+)"', f[8])
-                if not match or txid(match[1]) not in seqs:
-                    continue
-                name = txid(match[1])
-                chrom = f[0] if f[0].startswith('chr') else 'chr' + f[0]
-                if chrom == 'chrMT':
-                    chrom = 'chrM'
-                m = models[name]
-                if 'chrom' in m and (m['chrom'], m['strand']) != (chrom, f[6]):
-                    raise ValueError(f'Conflicting GTF loci for {name}')
-                m.update(chrom=chrom, strand=f[6])
-                m[f[2]].append((int(f[3]) - 1, int(f[4]), f[7]))
-        bins = defaultdict(list)
-        bin_size = 100000
-        for track in dict.fromkeys(tracks):
-            with open(Path(uniprot_dir) / (track + '.bed')) as handle:
-                for line in handle:
-                    if not line.strip() or line.startswith(('#', 'track', 'browser')):
-                        continue
-                    f = line.rstrip('\n').split('\t')
-                    a, b = (int(f[1]), int(f[2]))
-                    label = f[26] if track in {'unipDomain', 'unipInterest'} and len(f) > 26 else f[3]
-                    if track == 'unipInterest' and label != 'Disordered':
-                        continue
-                    if track == 'unipLocSignal' and label != 'Signal peptide':
-                        continue
-                    label = label.strip()
-                    if not label:
-                        continue
-                    if len(set(tracks)) > 1:
-                        label = track + ': ' + label
-                    blocks = [(a, b)]
-                    if split_blocks and len(f) >= 12:
-                        sizes = [int(x) for x in f[10].rstrip(',').split(',')]
-                        starts = [int(x) for x in f[11].rstrip(',').split(',')]
-                        if len(sizes) != int(f[9]) or len(starts) != len(sizes):
-                            raise ValueError('Malformed UniProt BED12 block count')
-                        blocks = [(a + s, a + s + n) for s, n in zip(starts, sizes)]
-                    for lo, hi in blocks:
-                        if not a <= lo < hi <= b:
-                            raise ValueError('Invalid UniProt BED block coordinates')
-                        for bucket in range(lo // bin_size, (hi - 1) // bin_size + 1):
-                            bins[f[0], f[5], bucket].append((lo, hi, label))
-        rows, qc, frame_rows = ([], [], [])
-        frame_rng = np.random.default_rng(seed)
-        rng = np.random.default_rng(seed)
-        for name, seq in seqs.items():
-            m = models.get(name)
-            reason = None
-            if m is None or not m['CDS']:
-                reason = 'missing_GTF_or_non_coding'
-            elif not m['exon']:
-                reason = 'missing_exons'
-            if reason:
-                qc.append((name, reason))
-                continue
-            exons = sorted(set(((a, b) for a, b, _ in m['exon'])), reverse=m['strand'] == '-')
-            genomic_order = sorted(exons)
-            if any((b > c for (a, b), (c, d) in zip(genomic_order, genomic_order[1:]))):
-                raise ValueError(f'Overlapping GTF exons for {name}')
-            offsets, offset = ([], 0)
-            for a, b in exons:
-                offsets.append((a, b, offset))
-                offset += b - a
-            if offset != len(seq):
-                qc.append((name, 'FASTA_GTF_length_mismatch'))
-                continue
-            cds = []
-            for a, b, phase in m['CDS']:
-                contained = False
-                for lo, hi, off in offsets:
-                    if lo <= a < b <= hi:
-                        start = off + (a - lo if m['strand'] == '+' else hi - b)
-                        cds.append((start, start + b - a, int(phase)))
-                        contained = True
-                        break
-                if not contained:
-                    raise ValueError(f'CDS is not contained in an exon: {name}')
-            cds = sorted(set(cds))
-            if any((b != c for (a, b, _), (c, d, _) in zip(cds, cds[1:]))):
-                qc.append((name, 'non_contiguous_CDS'))
-                continue
-            cs, ce, phase0 = (cds[0][0], cds[-1][1], cds[0][2])
-            anchor = cs + phase0
-            if any((p != (anchor - a) % 3 for a, b, p in cds)):
-                qc.append((name, 'inconsistent_CDS_phase'))
-                continue
-            projected = set()
-            for lo, hi, off in offsets:
-                candidates = set()
-                for bucket in range(lo // bin_size, (hi - 1) // bin_size + 1):
-                    candidates.update(bins.get((m['chrom'], m['strand'], bucket), ()))
-                for a, b, label in candidates:
-                    left, right = (max(lo, a), min(hi, b))
-                    if left < right:
-                        start = off + (left - lo if m['strand'] == '+' else hi - right)
-                        projected.add((start, start + right - left, label))
-
-            def record(k, pos, group):
-                domains = tuple(sorted({label for a, b, label in projected if a < pos + len(k) and pos < b}))
-                rows.append((name, k, pos, pos + len(k), (pos - anchor) % 3, group, domains))
-            for k in kmers:
-                pos = seq.find(k, cs, ce)
-                while pos >= 0:
-                    frame_rows.append((k, (pos - anchor) % 3, 'coding' if name in ref else 'control'))
-                    if name in ref:
-                        shuffled_frame_pos = cs + int(frame_rng.integers(ce - len(k) - cs + 1))
-                        frame_rows.append((k, (shuffled_frame_pos - anchor) % 3, 'shuffle'))
-                    if not in_frame or (pos >= anchor and (pos - anchor) % 3 == 0):
-                        record(k, pos, 'reference' if name in ref else 'control')
-                        if background == 'shuffle':
-                            first = anchor if in_frame else cs
-                            step = 3 if in_frame else 1
-                            n_positions = (ce - len(k) - first) // step + 1
-                            shuffled = first + step * int(rng.integers(n_positions))
-                            record(k, shuffled, 'control')
-                    pos = seq.find(k, pos + 1, ce)
-            qc.append((name, 'used'))
-        occurrences = pd.DataFrame(rows, columns=['transcript', 'kmer', 'start', 'end', 'frame', 'group', 'domains'])
-        frame_data = pd.DataFrame(frame_rows, columns=['kmer', 'frame', 'group'])
-        frame_index = pd.MultiIndex.from_product([kmers, ['coding', 'shuffle', 'control'], range(3)], names=['kmer', 'group', 'frame'])
-        frame_counts = frame_data.groupby(['kmer', 'group', 'frame']).size().reindex(frame_index, fill_value=0).rename('count').reset_index()
-        frame_totals = frame_counts.groupby(['kmer', 'group'])['count'].transform('sum')
-        frame_counts['percent'] = 100 * frame_counts['count'] / frame_totals.replace(0, np.nan)
-        quality = pd.DataFrame(qc, columns=['transcript', 'status'])
-        if len(quality) and (quality.status != 'used').any():
-            warnings.warn("Some transcripts excluded; inspect result['qc'] for reasons", stacklevel=2)
-        if occurrences.empty:
-            raise ValueError('No eligible CDS occurrences. Check IDs, full-length FASTAs, GTF and frame filter. ' + str(quality.status.value_counts().to_dict()))
-        totals = Counter(zip(occurrences.kmer, occurrences.group))
-        hits = Counter()
-        for row in occurrences.itertuples(index=False):
-            hits.update(((row.kmer, row.group, domain) for domain in row.domains))
-        domains = sorted({domain for _, _, domain in hits})
-        if not domains:
-            raise ValueError('No same-strand UniProt overlaps; check assembly, coordinates and selected tracks')
-        stats = []
-        for k in kmers:
-            n1, n0 = (totals[k, 'reference'], totals[k, 'control'])
-            for domain in domains:
-                a, c = (hits[k, 'reference', domain], hits[k, 'control', domain])
-                b, d = (n1 - a, n0 - c)
-                testable = n1 > 0 and n0 > 0 and (0 < a + c < n1 + n0)
-                odds, p = fisher_exact([[a, b], [c, d]], alternative='two-sided') if testable else (np.nan, np.nan)
-                delta = 0.5 if 0 in (a, b, c, d) else 0.0
-                logor = np.log2((a + delta) * (d + delta) / ((b + delta) * (c + delta))) if testable else np.nan
-                stats.append((k, domain, a, b, c, d, odds, logor, p, testable))
-        table = pd.DataFrame(stats, columns=['kmer', 'domain', 'A', 'B', 'C', 'D', 'odds_ratio', 'log2_or', 'pvalue', 'testable'])
-        table['fdr'] = np.nan
-        groups = [table.index] if fdr_scope == 'global' else table.groupby('kmer').groups.values()
-        for idx in groups:
-            valid = table.loc[idx, 'pvalue'].dropna().index
-            if len(valid):
-                table.loc[valid, 'fdr'] = multipletests(table.loc[valid, 'pvalue'], method='fdr_bh')[1]
-        table['significant'] = table.fdr.le(alpha)
-        table['enriched'] = table.odds_ratio.gt(1)
-        table['significant_enrichment'] = table.significant & table.enriched
-        matrix = table.pivot(index='kmer', columns='domain', values='log2_or').reindex(kmers)
-        qmatrix = table.pivot(index='kmer', columns='domain', values='fdr').reindex(kmers)
-        figure = None
-        frame_figure = None
-        plotted = list(matrix.columns)
-        if output_dir is None:
-            base = Path(self.dir_out)
-            base.mkdir(parents=True, exist_ok=True)
-            destination = Path(tempfile.mkdtemp(prefix='K_CDS_', dir=base))
-        else:
-            destination = Path(output_dir)
-            destination.mkdir(parents=True, exist_ok=False)
-        frame_counts.to_csv(destination / 'frame_distribution.tsv', sep='\t', index=False)
-        table.to_csv(destination / 'statistics.tsv', sep='\t', index=False)
-        occurrences.to_csv(destination / 'occurrences.tsv', sep='\t', index=False)
-        quality.to_csv(destination / 'qc.tsv', sep='\t', index=False)
-        matrix.to_csv(destination / 'log2_or.tsv', sep='\t')
-        qmatrix.to_csv(destination / 'fdr.tsv', sep='\t')
-        import json
-        settings = dict(gtf_file=str(gtf_file), uniprot_dir=str(uniprot_dir), kmers=kmers, method=method, in_frame=in_frame, background=background, tracks=list(tracks), alpha=alpha, fdr_scope=fdr_scope, split_blocks=split_blocks, seed=seed, reference_fasta=str(reference_path), control_fasta=str(control_path), plotted_domains=plotted, species=key, plot=plot, max_domains=max_domains)
-        (destination / 'settings.json').write_text(json.dumps(settings, indent=2))
-        result = dict(statistics=table, occurrences=occurrences, qc=quality, log2_or=matrix, fdr=qmatrix, figure=figure, frame_distribution=frame_counts, frame_figure=frame_figure, output_dir=str(destination), settings=settings)
-        result['final_figures'] = {}
-        result['cluster_assignments'] = None
-        result['positional_enrichment'] = positional
-        settings.update(final_plots=final_plots, positional_source=positional_source,
-                        frame_threshold=frame_threshold, start_fraction=start_fraction,
-                        color_cap=color_cap, recompute_positional=recompute_positional)
-        if final_plots:
-            positional.to_csv(destination / 'positional_enrichment.tsv', sep='\t', index=False)
-            figures_dir = destination / 'figures'
-            figures_dir.mkdir()
-            r_code = r"""
-        #!/usr/bin/env Rscript
-        # Usage: Rscript heatmap_script.R K_CDS_DIRECTORY [OUTPUT_DIRECTORY]
-        # Dependencies: BiocManager::install('ComplexHeatmap'); install.packages('circlize')
-        suppressPackageStartupMessages({
-          library(ComplexHeatmap)
-          library(circlize)
-          library(grid)
-        })
-        args <- commandArgs(trailingOnly=TRUE)
-        if (!length(args)) stop('Usage: Rscript heatmap_script.R K_CDS_DIRECTORY [OUTPUT_DIRECTORY]')
-        input <- args[1]
-        out <- if (length(args)>1) args[2] else file.path(input, 'R_figures')
-        dir.create(out, recursive=TRUE, showWarnings=FALSE)
-        # Adjustable analysis/display parameters.
-        threshold <- as.numeric(args[3])                    # Inclusive: score >= threshold passes.
-        start_fraction <- as.numeric(args[4])              # First 10% of CDS bins defines start contrast.
-        alpha <- as.numeric(args[5])
-        CAP <- as.numeric(args[6])                           # Cap applied before centring and clustering.
-        frame_colors <- c(First='lightgray', Second='white', Third='black')
-        col_fun <- colorRamp2(c(-CAP, -CAP/2, 0, CAP/2, CAP),
-                              c('#2166AC', '#92C5DE', '#FFFFFF', '#F4A582', '#B2182B'))
-        read_tsv <- function(name, required) {
-          path <- file.path(input, name)
-          if (!file.exists(path)) stop('Missing input: ', path)
-          x <- read.delim(path, check.names=FALSE, stringsAsFactors=FALSE)
-          if (!all(required %in% names(x))) stop(name, ': required columns: ', paste(required, collapse=', '))
-          x
-        }
-        frames <- read_tsv('frame_distribution.tsv', c('kmer','group','frame','count'))
-        stats <- read_tsv('statistics.tsv', c('kmer','domain','log2_or','fdr'))
-        pos <- read_tsv('positional_enrichment.tsv', c('kmer','bin','log2_or'))
-        if (anyDuplicated(stats[c('kmer','domain')])) stop('Duplicate kmer/domain pairs')
-        if (anyDuplicated(pos[c('kmer','bin')])) stop('Duplicate kmer/bin pairs')
-        if (anyDuplicated(frames[c('kmer','group','frame')])) stop('Duplicate frame rows')
-        if (anyNA(frames$count) || any(frames$count<0) || any(!frames$frame %in% 0:2)) stop('Invalid frame counts or frame labels')
-        kmers <- unique(stats$kmer)
-        if (length(kmers)<2) stop('At least two k-mers are required for two positional clusters')
-        if (!all(kmers %in% pos$kmer)) stop('Positional data missing for some k-mers')
-        bins <- unique(pos$bin[grepl('^CDS_[0-9]+$', pos$bin)])
-        bins <- bins[order(as.integer(sub('CDS_', '', bins)))]
-        if (length(bins)<2) stop('Need at least two CDS bins named CDS_0, CDS_1, ...')
-        make_matrix <- function(d, rows, cols, column, column_id) {
-          m <- matrix(NA_real_, length(rows), length(cols), dimnames=list(rows,cols))
-          ri <- match(d$kmer, rows); ci <- match(d[[column_id]], cols)
-          ok <- !is.na(ri) & !is.na(ci)
-          m[cbind(ri[ok],ci[ok])] <- as.numeric(d[[column]][ok])
-          m
-        }
-        p <- make_matrix(pos, kmers, bins, 'log2_or', 'bin')
-        # Missing estimates must not silently become neutral enrichment for clustering.
-        if (any(!is.finite(p))) stop('CDS positional matrix contains missing/nonfinite estimates. Supply complete, unmasked log2_or values; do not use the pooled or FDR-masked matrix.')
-        # Ward groups are computed from capped, row-centred positional profiles.
-        # The displayed heatmap retains capped enrichment values, without centring.
-        p_cap <- pmin(pmax(p, -CAP), CAP)
-        ns <- max(1L, min(ncol(p)-1L, ceiling(ncol(p)*start_fraction)))
-        contrast_raw <- rowMeans(p[,seq_len(ns),drop=FALSE]) - rowMeans(p[,-seq_len(ns),drop=FALSE])
-        contrast <- rowMeans(p_cap[,seq_len(ns),drop=FALSE]) - rowMeans(p_cap[,-seq_len(ns),drop=FALSE])
-        profile <- p_cap - rowMeans(p_cap)
-        hc <- hclust(dist(profile, method='euclidean'), method='ward.D2')
-        cl <- cutree(hc, k=2)
-        start_cluster <- as.integer(names(which.max(tapply(contrast, cl, mean))))
-        group <- ifelse(cl == start_cluster, 'CDS start', 'CDS body')
-        frame_matrix <- function(g) {
-          d <- frames[frames$group==g,,drop=FALSE]
-          m <- make_matrix(d, kmers, as.character(0:2), 'count', 'frame')
-          if (anyNA(m)) stop('Missing frame rows for group ', g, '; include all three frames, even zero counts')
-          total <- rowSums(m)
-          m <- m / ifelse(total>0, total, NA_real_)
-          colnames(m) <- c('First','Second','Third')
-          m
-        }
-        cds <- frame_matrix('coding'); shuffle <- frame_matrix('shuffle')
-        score <- apply(cds, 1, function(x) if (all(is.na(x))) NA_real_ else max(x))
-        passes <- !is.na(score) & score >= threshold
-        winner <- apply(cds, 1, function(x) if (all(is.na(x))) NA_character_ else paste(colnames(cds)[which(x==max(x))],collapse='/'))
-        # Shared row order: body first, start second; decreasing In Frame Index.
-        # All row-dependent vectors and matrices must follow exactly the same order.
-        in_frame_index <- 100 * score
-        ord <- order(factor(group, levels=c('CDS body','CDS start')), -in_frame_index, kmers)
-        kmers <- kmers[ord]
-        rna <- gsub('T', 'U', kmers)
-        p <- p_cap[ord,,drop=FALSE]
-        cds <- cds[ord,,drop=FALSE]; shuffle <- shuffle[ord,,drop=FALSE]
-        score <- score[ord]; in_frame_index <- in_frame_index[ord]
-        passes <- passes[ord]; winner <- winner[ord]
-        contrast <- contrast[ord]; contrast_raw <- contrast_raw[ord]
-        split <- factor(group[ord], levels=c('CDS body','CDS start'))
-        message('Ward on capped, row-centred profiles: ', sum(split == 'CDS body'),
-                ' CDS body; ', sum(split == 'CDS start'), ' CDS start')
-
-        domains <- unique(stats$domain)
-        domain_limit <- if (args[7]=='all') Inf else as.integer(args[7])
-        if (length(domains) > domain_limit) {
-          best_fdr <- vapply(domains, function(domain) {
-            values <- stats$fdr[stats$domain==domain]
-            if (all(is.na(values))) Inf else min(values, na.rm=TRUE)
-          }, numeric(1))
-          domains <- domains[order(best_fdr, seq_along(domains))][seq_len(domain_limit)]
-        }
-        d <- make_matrix(stats, kmers, domains, 'log2_or', 'domain')
-        q <- make_matrix(stats, kmers, domains, 'fdr', 'domain')
-        d[!is.finite(d)] <- NA_real_
-        d[!passes,] <- NA_real_
-        write.table(data.frame(kmer=kmers, cluster=as.character(split), score=score,
-                              passes=passes, preferred_frame=winner,
-                              start_minus_body=contrast,
-                              start_minus_body_raw=contrast_raw,
-                              in_frame_index=in_frame_index, kmer_rna=rna),
-                    file.path(out,'cluster_assignments.tsv'), sep='\t', quote=FALSE, row.names=FALSE)
-        # Shared ordering is explicit: neither heatmap can independently reorder rows.
-        base_hm <- function(mat, name, ...) Heatmap(mat, name=name, col=col_fun,
-          cluster_rows=FALSE, cluster_columns=FALSE, cluster_row_slices=FALSE,
-          row_order=seq_len(nrow(mat)), row_split=split, row_gap=unit(2,'mm'),
-          row_title_rot=90, row_title_gp=gpar(fontsize=8,fontface='bold'),
-          row_names_gp=gpar(fontsize=8), column_names_gp=gpar(fontsize=8),
-          column_names_rot=90, border=TRUE, ...)
-        flag <- function() rowAnnotation(
-          `Frame preference`=anno_simple(ifelse(passes,'Pass','Fail'),
-            col=c(Pass='black',Fail='white'), border=TRUE, simple_anno_size=unit(3,'mm')),
-          annotation_name_rot=90)
-        # Explicit labels remain visible when composed with other heatmaps.
-        cell_mm <- 4
-        main_gap_mm <- 2 * (length(unique(split)) - 1L)
-        main_left <- rowAnnotation(
-          `k-mer`=anno_text(rna, just='right', location=unit(1,'npc'),
-            gp=gpar(fontsize=8), width=max_text_width(rna, gp=gpar(fontsize=8)) + unit(2,'mm')),
-          `Frame preference`=anno_simple(ifelse(passes,'Pass','Fail'),
-            col=c(Pass='black',Fail='white'), border=TRUE,
-            simple_anno_size=unit(cell_mm,'mm')),
-          gap=unit(1.5,'mm'), show_annotation_name=FALSE)
-        main <- base_hm(d, 'Domain log2 OR', na_col='grey90',
-          column_title='Domain enrichment', show_row_names=FALSE,
-          left_annotation=main_left,
-          width=unit(ncol(d)*cell_mm,'mm'),
-          height=unit(nrow(d)*cell_mm + main_gap_mm,'mm'),
-          rect_gp=gpar(col='grey90',lwd=0.4),
-          cell_fun=function(j,i,x,y,w,h,fill) {
-            if (!passes[i]) {
-              grid.rect(x,y,w,h,gp=gpar(fill='white',col=NA))
-              if (j==ceiling(ncol(d)/2)) grid.text('N.C.',x,y,gp=gpar(fontsize=7))
-            } else if (is.finite(q[i,j]) && q[i,j]<=alpha) {
-              grid.text('*',x,y,gp=gpar(fontsize=8))
-            }
-          })
-        # Horizontal stacked bars: first light grey, second white, third black;
-        # thin grey outlines and white space between rows reproduce reference styling.
-        bar <- function(m) {
-          missing <- which(rowSums(is.na(m))==3)
-          m[is.na(m)] <- 0
-          anno_barplot(m*100, beside=FALSE, gp=gpar(fill=frame_colors,col='grey45',lwd=0.5),
-            border=TRUE, bar_width=0.8, ylim=c(0,100), width=unit(36,'mm'),
-            axis_param=list(at=c(0,50,100), labels=c('0','50','100'),side='top',gp=gpar(fontsize=8)))
-        }
-        # Separate missing-data labels avoid confusing absent hits with 0% in a frame.
-        missing_labels <- ifelse(is.na(score),'No CDS hits',
-                                 ifelse(is.na(shuffle[,1]),'No shuffle hits',''))
-        anno <- rowAnnotation(`CDS (%)`=bar(cds), `Shuffle (%)`=bar(shuffle),
-          `In Frame Index`=anno_lines(in_frame_index, ylim=c(30,100), add_points=TRUE,
-            pt_gp=gpar(col='black',fill='black'), size=unit(1,'mm'), pch=16,
-            gp=gpar(col='black',lwd=0.75), border=TRUE, width=unit(17,'mm'),
-            axis_param=list(at=c(40,60,80,100),labels=c('40','60','80','100'),
-                            side='top',gp=gpar(fontsize=6))),
-          ` `=anno_text(missing_labels,gp=gpar(fontsize=7)),
-          annotation_name_rot=0, annotation_name_side='top', gap=unit(3,'mm'))
-        supp_left <- rowAnnotation(
-          `k-mer`=anno_text(rna, just='right', location=unit(1,'npc'),
-            gp=gpar(fontsize=8),
-            width=max_text_width(rna, gp=gpar(fontsize=8)) + unit(2,'mm')),
-          show_annotation_name=FALSE)
-        supp <- base_hm(p, 'Position log2 OR', column_title='CDS positional enrichment',
-          show_column_names=FALSE, show_row_names=FALSE,
-          left_annotation=supp_left, width=unit(105,'mm'),
-          rect_gp=gpar(col=NA)) + anno
-        leg_flag <- Legend(title=paste0('Max frame fraction ≥ ',threshold),
-          labels=c('Pass','Below threshold / no CDS hits'),type='grid',
-          legend_gp=gpar(fill=c('black','white'),col='black'))
-        leg_frame <- Legend(title='Codon start position',labels=c('First','Second','Third'),
-          legend_gp=gpar(fill=frame_colors,col='grey45'))
-        height <- max(6, length(kmers)*0.17+2.8)
-        save_plot <- function(obj, name, width, legends, plot_height=height) {
-          for (ext in c('pdf','png','svg')) {
-            path <- file.path(out,paste0(name,'.',ext))
-            if (ext=='pdf') pdf(path,width=width,height=plot_height,onefile=FALSE)
-            else if (ext=='svg') svg(path,width=width,height=plot_height,family='Arial')
-            else png(path,width=width,height=plot_height,units='in',res=300,family='Arial')
-            tryCatch(draw(obj, merge_legends=TRUE, heatmap_legend_side='right',
-                          annotation_legend_list=legends), finally=dev.off())
-          }
-        }
-        save_plot(main,'main_domains',max(5.5, (ncol(d)*cell_mm + 115)/25.4),
-                  list(leg_flag), plot_height=(nrow(d)*cell_mm + main_gap_mm + 85)/25.4)
-        save_plot(supp,'supplement_positions_frames',13,list(leg_frame))
-        writeLines(c(capture.output(sessionInfo()),
-          paste('Threshold (inclusive):',threshold), paste('Start fraction:',start_fraction),
-          paste('Colour scale and clustering cap: +/-',CAP),
-          'Classification: Euclidean distance, Ward.D2, capped CDS log2 OR centred on each row mean; cutree(k=2).',
-          'The cluster with the higher mean first-10%-minus-rest capped contrast is CDS start.',
-          'Within-group ordering: decreasing In Frame Index (100 * maximum CDS frame fraction), then k-mer.',
-          'Positional heatmap shows capped, uncentred log2 OR; domain values use the same colour scale.',
-          'cluster_assignments.tsv: start_minus_body is capped; start_minus_body_raw is uncapped.',
-          'Frame colours: First=lightgray, Second=white, Third=black; displayed k-mers use U.',
-          'N.C. means frame-preference criterion not met or unavailable; not proof of noncoding.'),
-          file.path(out,'plot_settings.txt'))
-        message('Saved figures and assignments in ', normalizePath(out))
-        """
-            script_path = destination / 'heatmap_script.R'
-            script_path.write_text(textwrap.dedent(r_code).lstrip(), encoding='utf-8')
-            command = [r_executable, '--vanilla', str(script_path.resolve()),
-                       str(destination.resolve()), str(figures_dir.resolve()),
-                       str(frame_threshold), str(start_fraction), str(alpha), str(color_cap),
-                       "all" if max_domains is None else str(max_domains)]
-            completed = subprocess.run(command, capture_output=True, text=True)
-            (destination / 'heatmap_R.log').write_text(completed.stdout + completed.stderr, encoding='utf-8')
-            if completed.returncode:
-                self.k_cds = result
-                self.domain_enrichment = result
-                raise RuntimeError('Final R panels failed; existing K-CDS outputs are saved in ' + str(destination) + '\n' + completed.stderr)
-            names = ['main_domains', 'supplement_positions_frames']
-            for name in names:
-                paths = {ext: str(figures_dir / (name + '.' + ext)) for ext in ['pdf', 'png', 'svg']}
-                if not all(Path(path).is_file() for path in paths.values()):
-                    raise RuntimeError('R did not generate all final figure files: ' + name)
-                result['final_figures'][name] = paths
-            result['cluster_assignments'] = pd.read_csv(figures_dir / 'cluster_assignments.tsv', sep='\t')
-            result['figures_dir'] = str(figures_dir)
-            print(result['cluster_assignments']['cluster'].value_counts().to_string())
-            if show_final:
-                try:
-                    from IPython import get_ipython
-                    from IPython.display import display, Image
-                    if get_ipython() is not None:
-                        for name in names:
-                            display(Image(filename=result['final_figures'][name]['png']))
-                except ImportError:
-                    pass
-        (destination / 'settings.json').write_text(json.dumps(settings, indent=2), encoding='utf-8')
-        self.k_cds = result
-        self.domain_enrichment = result
-        return result
-
 
 
     def CompareTranscriptKmerProfiles(
@@ -3165,426 +2274,795 @@ class KEA():
         return species_method_intersections, final_intersection
 
     def KmersProteinEnrichment(
-        self,
-        kmers,
-        df_zscore,
-        # --- kmer preprocessing ---
-        k_out=None,
-        deconvolute_unique=True,
-        convert_to_rna=True,
-        # --- analysis mode ---
-        mode="continuous",
-        test="mwu",
-        # --- binary mode ---
-        threshold=None,
-        top_n=None,
-        # --- multiple testing ---
-        fdr_alpha=0.05,
-        # --- significance / plotting ---
-        plot=True,
-        p_col="fdr",
-        p_thresh=0.05,
-        fc_thresh=1.0,
-        highlight=None,
-        highlight_top_n=10,
-        # --- output ---
-        save=None,
-        # --- background ---
-        bg_kmers=None,
-        # --- plotting ---
-        plot_type="lollipop",
-        wordcloud_score="cliff_delta",
-        wordcloud_top_n=10,
-        wordcloud_font_path=None):
+    self,
+    kmers,
+    df_zscore,
+    # --- kmer preprocessing ---
+    k_out=None,
+    deconvolute_unique=True,
+    convert_to_rna=True,
+    # --- analysis mode ---
+    mode="continuous",
+    test="mwu",
+    # --- binary mode ---
+    threshold=None,
+    top_n=None,
+    # --- multiple testing ---
+    fdr_alpha=0.05,
+    # --- significance / plotting ---
+    plot=True,
+    p_col="fdr",
+    p_thresh=0.05,
+    fc_thresh=1.0,
+    highlight=None,
+    highlight_top_n=10,
+    # --- output ---
+    save=None,
+    # --- background ---
+    bg_kmers=None,
+    # --- plotting ---
+    plot_type="lollipop",
+    wordcloud_score="cliff_delta",
+    wordcloud_top_n=10,
+    wordcloud_font_path=None):
 
-        # Additional output: original k-mer x enriched protein/profile scores.
-        # For a 7-mer, use its three overlapping pentamers, including repeats.
-        # A missing/nonfinite pentamer score makes that cell NaN: the value
-        # therefore always represents the mean of all three pentamer scores.
-        # The original enrichment return value and downstream analysis are unchanged.
-        # Retrieve the added DataFrame as self.kmer_protein_scores.
-        original_kmers = list(kmers)
-        score_lookup = df_zscore.copy()
-        score_lookup.index = pd.Index([
-            str(k).strip().upper().replace("T", "U")
-            for k in score_lookup.index
-        ])
-        score_lookup = score_lookup.apply(pd.to_numeric, errors="coerce")
-        score_lookup = score_lookup.replace([np.inf, -np.inf], np.nan)
-        if not score_lookup.index.is_unique:
-            score_lookup = score_lookup.groupby(level=0, sort=False).mean()
-
-        row_labels = []
-        score_rows = []
-        seen_labels = set()
-        for original_kmer in original_kmers:
-            sequence = str(original_kmer).strip().upper()
-            label = sequence.replace("T", "U") if convert_to_rna else sequence
-            if label in seen_labels:
-                continue
-            seen_labels.add(label)
-            row_labels.append(label)
-            sequence = sequence.replace("T", "U")
-            pentamers = [sequence[i:i + 5] for i in range(len(sequence) - 4)]
-            if pentamers:
-                values = score_lookup.reindex(pentamers).to_numpy(dtype=float)
-                score_rows.append(np.mean(values, axis=0))
-            else:
-                score_rows.append(np.full(len(df_zscore.columns), np.nan))
-
-        all_protein_scores = pd.DataFrame(
-            score_rows,
-            index=pd.Index(row_labels, name="kmer"),
-            columns=df_zscore.columns.copy(),
-            dtype=float
-        )
-        # Clear previous selections, including when no enrichment results exist.
-        self.kmer_protein_scores = all_protein_scores.iloc[:, :0].copy()
-
-        # ----------------------------------------------------------------
-        # 1. DECONVOLUTE KMERS (optional)
-        # ----------------------------------------------------------------
-        if k_out is not None:
-            k_in = len(kmers[0])
-            if k_out > k_in:
-                raise ValueError(f"k_out ({k_out}) must be <= k_in ({k_in})")
+            # ----------------------------------------------------------------
+            # NEW DEFAULT OUTPUT: original k-mer × protein/profile PEKA scores
+            #
+            # Retrieve the additional DataFrame with:
+            #     self.kmer_protein_scores
+            # e.g.:
+            #     synaptosome.kmer_protein_scores
+            #
+            # Each 7-mer contributes its three overlapping pentamers.
+            # Repeated pentamers are counted at each position.
+            # A missing/nonfinite score in any pentamer gives NaN for that cell.
+            # Protein/profile names remain exactly those supplied in df_zscore.
+            # The original return value and enrichment analysis remain unchanged.
+            # ----------------------------------------------------------------
+            original_kmers = list(kmers)
     
-            
-            print(f"[KEA] Deconvoluting {len(kmers)} kmers: k={k_in} -> k={k_out}")
+            score_lookup = df_zscore.copy()
+            score_lookup.index = pd.Index([
+                str(k).strip().upper().replace("T", "U")
+                for k in score_lookup.index
+            ])
+            score_lookup = score_lookup.apply(
+                pd.to_numeric, errors="coerce"
+            )
+            score_lookup = score_lookup.replace(
+                [np.inf, -np.inf], np.nan
+            )
     
-            def _deconv(lst):
-                out = set() if deconvolute_unique else []
-                for kmer in lst:
-                    if len(kmer) != k_in:
-                        raise ValueError(f"Kmer '{kmer}' has length {len(kmer)}, expected {k_in}")
-                    for i in range(k_in - k_out + 1):
-                        sub = kmer[i:i + k_out]
-                        if deconvolute_unique:
-                            out.add(sub)
-                        else:
-                            out.append(sub)
-                return list(out)
+            if not score_lookup.index.is_unique:
+                score_lookup = score_lookup.groupby(
+                    level=0, sort=False
+                ).mean()
     
-            kmers = _deconv(kmers)
+            row_labels = []
+            score_rows = []
+            seen_labels = set()
     
-            if bg_kmers is not None:
-                
-                print(f"[KEA] Deconvoluting bg_kmers: {len(bg_kmers)} kmers")
-                bg_kmers = _deconv(bg_kmers)
-                print(f"[KEA] After deconvolution: {len(kmers)} kmers | " f"bg={len(bg_kmers) if bg_kmers is not None else 'default'}")
-    
-        # ----------------------------------------------------------------
-        # 2. CONVERT T -> U (optional)
-        # ----------------------------------------------------------------
-        if convert_to_rna:
-            df_zscore = df_zscore.copy()
-            df_zscore.index = df_zscore.index.str.replace("T", "U")
-            kmers = [k.replace("T", "U") for k in kmers]
-            if bg_kmers is not None:
-                bg_kmers = [k.replace("T", "U") for k in bg_kmers]
-    
-        # ----------------------------------------------------------------
-        # 3. VALIDATE KMERS AGAINST DF INDEX
-        # ----------------------------------------------------------------
-        index_kmers = set(df_zscore.index)
-        kmers_valid = list(set(kmers).intersection(index_kmers))
-        n_missing = len(set(kmers)) - len(kmers_valid)
-    
-       
-        print(f"[KEA] Kmers of interest : {len(set(kmers))} total | "f"{len(kmers_valid)} found in df | {n_missing} missing")
-    
-        if len(kmers_valid) == 0:
-            raise ValueError("No valid kmers found in df_zscore index.")
-    
-        # ----------------------------------------------------------------
-        # NEW: VALIDATE bg_kmers
-        # ----------------------------------------------------------------
-        if bg_kmers is not None:
-            bg_kmers_valid = list(set(bg_kmers).intersection(index_kmers))
-            print(f"[KEA] Custom bg_kmers: {len(bg_kmers)} total | {len(bg_kmers_valid)} found")
-            if len(bg_kmers_valid) == 0:
-                raise ValueError("None of the provided bg_kmers are present in df_zscore index.")
-        else:
-            bg_kmers_valid = None
-    
-        # ----------------------------------------------------------------
-        # 4. RUN ENRICHMENT (FIXED)
-        # ----------------------------------------------------------------
-        if mode == "continuous":
-    
-            if bg_kmers_valid is None:
-                background_kmers = list(index_kmers - set(kmers_valid))
-            else:
-                background_kmers = bg_kmers_valid
-    
-            MAX_BG_RATIO = 10
-            if len(background_kmers) > MAX_BG_RATIO * len(kmers_valid):
-                rng = np.random.default_rng(42)
-                background_kmers = list(
-                    rng.choice(background_kmers,
-                               size=MAX_BG_RATIO * len(kmers_valid),
-                               replace=False)
+            for original_kmer in original_kmers:
+                sequence = str(original_kmer).strip().upper()
+                label = (
+                    sequence.replace("T", "U")
+                    if convert_to_rna
+                    else sequence
                 )
     
-            # Cliff’s delta
-            def cliffs_delta(x, y):
-                import numpy as np
-                x = np.asarray(x)
-                y = np.asarray(y)
-                n = len(x)
-                m = len(y)
-                greater = sum((xi > y).sum() for xi in x)
-                less    = sum((xi < y).sum() for xi in x)
-                return (greater - less) / (n * m)
-    
-            results = []
-    
-            for col in df_zscore.columns:
-                g1 = df_zscore.loc[kmers_valid, col].dropna().values
-                g2 = df_zscore.loc[background_kmers, col].dropna().values
-    
-                if len(g1) < 2 or len(g2) < 2:
+                if label in seen_labels:
                     continue
     
-                mean1, mean2 = np.mean(g1), np.mean(g2)
-                med1,  med2  = np.median(g1), np.median(g2)
-                sd1,   sd2   = np.std(g1), np.std(g2)
+                seen_labels.add(label)
+                row_labels.append(label)
+                sequence = sequence.replace("T", "U")
     
-                if test == "mwu":
-                    stat, pval = mannwhitneyu(g1, g2, alternative="greater")
-                    effect = 1 - (2 * stat) / (len(g1) * len(g2))
-                elif test == "ks":
-                    stat, pval = ks_2samp(g1, g2, alternative="greater")
-                    effect = stat
+                pentamers = [
+                    sequence[i:i + 5]
+                    for i in range(len(sequence) - 4)
+                ]
+    
+                if pentamers:
+                    values = score_lookup.reindex(
+                        pentamers
+                    ).to_numpy(dtype=float)
+                    score_rows.append(np.mean(values, axis=0))
                 else:
-                    raise ValueError(f"Unknown test '{test}'.")
+                    score_rows.append(
+                        np.full(len(df_zscore.columns), np.nan)
+                    )
     
-                # REPLACE Δ‑median WITH CLIFF’S DELTA
-                zscore_diff = cliffs_delta(g1, g2)
+            self.kmer_protein_scores = pd.DataFrame(
+                score_rows,
+                index=pd.Index(row_labels, name="kmer"),
+                columns=df_zscore.columns.copy(),
+                dtype=float
+            )
     
-                results.append({
-                    "protein":        col,
-                    "mean_group1":    mean1,
-                    "mean_group2":    mean2,
-                    "median_group1":  med1,
-                    "median_group2":  med2,
-                    "sd1":            sd1,
-                    "sd2":            sd2,
-                    "effect_size":    effect,
-                    "pvalue":         pval,
-                    "zscore_diff":    zscore_diff,
-                    "n1":             len(g1),
-                    "n2":             len(g2)
-                })
+            # ----------------------------------------------------------------
+            # 1. DECONVOLUTE KMERS (optional)
+            # ----------------------------------------------------------------
+            if k_out is not None:
+                k_in = len(kmers[0])
+                if k_out > k_in:
+                    raise ValueError(
+                        f"k_out ({k_out}) must be <= k_in ({k_in})"
+                    )
     
-        # ----------------------------------------------------------------
-        # 5. MULTIPLE TESTING CORRECTION
-        # ----------------------------------------------------------------
-        results = pd.DataFrame(results)
+                print(
+                    f"[KEA] Deconvoluting {len(kmers)} kmers: "
+                    f"k={k_in} -> k={k_out}"
+                )
     
-        if len(results) == 0:
-            print("[KEA] Warning: no results generated.")
-            return results
+                def _deconv(lst):
+                    out = set() if deconvolute_unique else []
+                    for kmer in lst:
+                        if len(kmer) != k_in:
+                            raise ValueError(
+                                f"Kmer '{kmer}' has length {len(kmer)}, "
+                                f"expected {k_in}"
+                            )
+                        for i in range(k_in - k_out + 1):
+                            sub = kmer[i:i + k_out]
+                            if deconvolute_unique:
+                                out.add(sub)
+                            else:
+                                out.append(sub)
+                    return list(out)
     
-        results["fdr"]  = multipletests(results["pvalue"], method="fdr_bh")[1]
-        results["bonf"] = multipletests(results["pvalue"], method="bonferroni")[1]
-        results["significant_fdr"]  = results["fdr"]  < fdr_alpha
-        results["significant_bonf"] = results["bonf"] < fdr_alpha
-        results = results.sort_values("fdr").reset_index(drop=True)
-
-        # Use the requested significance and positive Cliff's delta thresholds.
-        # Column order follows decreasing Cliff's delta, independent of plotting.
-        if p_col not in results.columns:
-            raise ValueError(f"Unknown significance column: {p_col}")
-        enriched_proteins = results.loc[
-            (results[p_col] < p_thresh)
-            & (results["zscore_diff"] > 0)
-            & (results["zscore_diff"] >= fc_thresh)
-        ].sort_values("zscore_diff", ascending=False, kind="stable")["protein"]
-        self.kmer_protein_scores = all_protein_scores.loc[
-            :, enriched_proteins.tolist()
-        ].copy()
+                kmers = _deconv(kmers)
     
-        n_sig_fdr  = results["significant_fdr"].sum()
-        n_sig_bonf = results["significant_bonf"].sum()
-        print(f"[KEA] Significant proteins — FDR<{fdr_alpha}: {n_sig_fdr} | "f"Bonferroni<{fdr_alpha}: {n_sig_bonf}")
+                if bg_kmers is not None:
+                    print(
+                        f"[KEA] Deconvoluting bg_kmers: "
+                        f"{len(bg_kmers)} kmers"
+                    )
+                    bg_kmers = _deconv(bg_kmers)
+                    print(
+                        f"[KEA] After deconvolution: {len(kmers)} kmers | "
+                        f"bg={len(bg_kmers) if bg_kmers is not None else 'default'}"
+                    )
     
-
-        # ----------------------------------------------------------------
-        # 6. VISUALIZATION (VOLCANO + OPTIONAL ALTERNATIVES)
-        # ----------------------------------------------------------------
-        if plot:
-            df_plot = results.copy(); df_plot["neglog10p"] = -np.log10(df_plot["pvalue"] + 1e-300)
-            sig_mask = (df_plot[p_col] < p_thresh) & (np.abs(df_plot["zscore_diff"]) > fc_thresh)
-            hl_mask = pd.Series(False, index=df_plot.index)
-            if highlight is not None:
-                if isinstance(highlight, str): highlight = [highlight]
-                hl_mask = df_plot["protein"].str.contains("|".join(highlight), case=False, na=False)
-            hl_top_mask = pd.Series(False, index=df_plot.index)
-            if highlight_top_n is not None:
-                sig = df_plot[sig_mask]; top_idx = sig.nlargest(highlight_top_n, "zscore_diff").index
-                hl_top_mask = df_plot.index.isin(top_idx)
-        
-            # ================================================================  # 6A. VOLCANO PLOT  # ================================================================
-            if plot_type == "volcano":
-                fig, ax = plt.subplots(figsize=(9, 7))
-                ax.scatter(df_plot.loc[~sig_mask, "zscore_diff"], df_plot.loc[~sig_mask, "neglog10p"], color="lightgrey", alpha=0.5, s=25, label="n.s.")
-                ax.scatter(df_plot.loc[sig_mask & ~hl_mask, "zscore_diff"], df_plot.loc[sig_mask & ~hl_mask, "neglog10p"], color="tomato", alpha=0.8, s=35, label="significant")
-                ax.scatter(df_plot.loc[hl_mask, "zscore_diff"], df_plot.loc[hl_mask, "neglog10p"], color="royalblue", edgecolor="black", s=110, label="highlight")
-                for _, row in df_plot.loc[hl_mask | hl_top_mask].iterrows(): ax.text(row["zscore_diff"], row["neglog10p"], row["protein"], fontsize=8, ha="left", va="bottom")
-                ax.axhline(-np.log10(p_thresh), linestyle="--", color="grey", linewidth=0.8); ax.axvline(fc_thresh, linestyle="--", color="grey", linewidth=0.8); ax.axvline(-fc_thresh, linestyle="--", color="grey", linewidth=0.8)
-                ax.set_xlabel("Cliff’s delta (group1 vs background)"); ax.set_ylabel("-log10(pvalue)"); ax.set_title("Volcano plot (Cliff’s delta)"); ax.legend(fontsize=8)
-                if save is not None:
-                        filenames = save if isinstance(save, (list, tuple)) else [save]
-                        for filename in filenames:
-                            fig.savefig(filename, dpi=600, bbox_inches="tight", facecolor="white")
-                plt.tight_layout(); plt.show(); plt.close()
-        
-            # ================================================================  # 6D. LOLLIPOP PLOT  # ================================================================
-            elif plot_type == "lollipop":
-                sig = df_plot[sig_mask].sort_values("zscore_diff")
-                fig, ax = plt.subplots(figsize=(9, max(4, len(sig) * 0.35)))
-                ax.hlines(sig["protein"], 0, sig["zscore_diff"], color="grey", alpha=0.6)
-                ax.scatter(sig["zscore_diff"], sig["protein"], c="tomato", s=40)
-                sig_hl_mask = sig["protein"].isin(df_plot.loc[hl_mask, "protein"])
-                ax.scatter(sig.loc[sig_hl_mask, "zscore_diff"], sig.loc[sig_hl_mask, "protein"], c="royalblue", edgecolor="black", s=110)
-                # NO LABELS HERE — axis already shows protein names
-                ax.set_xlabel("Cliff’s delta"); ax.set_ylabel("Protein"); ax.set_title("Lollipop plot (significant proteins)")
-                if save is not None:
-                        filenames = save if isinstance(save, (list, tuple)) else [save]
-                        for filename in filenames:
-                            fig.savefig(filename, dpi=600, bbox_inches="tight", facecolor="white")
-                plt.tight_layout(); plt.show()
-
-            elif plot_type == "barplot":
-                df_bar = df_plot.copy().sort_values("zscore_diff")
-                colors = ["tomato" if ((row[p_col] < p_thresh) and (abs(row["zscore_diff"]) > fc_thresh)) else "lightgrey" for _, row in df_bar.iterrows()]
-                fig, ax = plt.subplots(figsize=(max(9, len(df_bar)*0.25), 6))
-                ax.bar(df_bar["protein"], df_bar["zscore_diff"], color=colors)
-                ax.set_xlim(-0.5, len(df_bar)-0.5)
-                ax.axhline(0, color="black", linewidth=0.8)
-                ax.set_ylabel("Cliff’s delta")
-                ax.set_xlabel("Protein")
-                ax.set_title("Cliff’s delta — All proteins (barplot)")
-                plt.xticks(rotation=90)
-                plt.tight_layout()
-                if save is not None:
-                        filenames = save if isinstance(save, (list, tuple)) else [save]
-                        for filename in filenames:
-                            fig.savefig(filename, dpi=600, bbox_inches="tight", facecolor="white")
-                plt.show()
-
-            elif plot_type == "wordcloud":
-                # Select proteins ONLY by significance and Cliff's delta
-                df_wc = df_plot.loc[(df_plot[p_col] < p_thresh) & (df_plot["zscore_diff"] >= fc_thresh)].copy()
-                df_wc = df_wc.dropna(subset=["protein", "zscore_diff"])
-                df_wc = df_wc.loc[np.isfinite(df_wc["zscore_diff"])].copy()
-                df_wc["protein"] = df_wc["protein"].astype(str).str.strip()
-                df_wc = df_wc.loc[df_wc["protein"].ne("")]
-                df_wc = df_wc.drop_duplicates(subset="protein", keep="first")
-
-                if wordcloud_top_n is not None:
-                    if not isinstance(wordcloud_top_n, (int, np.integer)) or wordcloud_top_n < 1:
-                        raise ValueError("wordcloud_top_n must be a positive integer or None.")
-                    df_wc = df_wc.head(wordcloud_top_n)
-
-                if df_wc.empty:
-                    raise ValueError("No proteins passed the selected thresholds.")
-
-                # Selection is now fixed: calculate plotting scores afterwards
-                if wordcloud_score == "cliff_delta":
-                    df_wc["wordcloud_score"] = df_wc["zscore_diff"]
-                    score_label = "Cliff’s delta"
-                    title_score = "Cliff’s delta"
-                elif wordcloud_score == "median_ratio":
-                    denominator = df_wc["median_group2"] + 1
-                    df_wc["wordcloud_score"] = df_wc["median_group1"] / denominator.mask(np.isclose(denominator, 0))
-                    score_label = "Median group 1 / (median group 2 + 1)"
-                    title_score = "median-ratio score"
+            # ----------------------------------------------------------------
+            # 2. CONVERT T -> U (optional)
+            # ----------------------------------------------------------------
+            if convert_to_rna:
+                df_zscore = df_zscore.copy()
+                df_zscore.index = df_zscore.index.str.replace("T", "U")
+                kmers = [k.replace("T", "U") for k in kmers]
+                if bg_kmers is not None:
+                    bg_kmers = [k.replace("T", "U") for k in bg_kmers]
+    
+            # ----------------------------------------------------------------
+            # 3. VALIDATE KMERS AGAINST DF INDEX
+            # ----------------------------------------------------------------
+            index_kmers = set(df_zscore.index)
+            kmers_valid = list(set(kmers).intersection(index_kmers))
+            n_missing = len(set(kmers)) - len(kmers_valid)
+    
+            print(
+                f"[KEA] Kmers of interest : {len(set(kmers))} total | "
+                f"{len(kmers_valid)} found in df | {n_missing} missing"
+            )
+    
+            if len(kmers_valid) == 0:
+                raise ValueError(
+                    "No valid kmers found in df_zscore index."
+                )
+    
+            # ----------------------------------------------------------------
+            # VALIDATE bg_kmers
+            # ----------------------------------------------------------------
+            if bg_kmers is not None:
+                bg_kmers_valid = list(
+                    set(bg_kmers).intersection(index_kmers)
+                )
+                print(
+                    f"[KEA] Custom bg_kmers: {len(bg_kmers)} total | "
+                    f"{len(bg_kmers_valid)} found"
+                )
+                if len(bg_kmers_valid) == 0:
+                    raise ValueError(
+                        "None of the provided bg_kmers are present "
+                        "in df_zscore index."
+                    )
+            else:
+                bg_kmers_valid = None
+    
+            # ----------------------------------------------------------------
+            # 4. RUN ENRICHMENT
+            # ----------------------------------------------------------------
+            if mode == "continuous":
+    
+                if bg_kmers_valid is None:
+                    background_kmers = list(
+                        index_kmers - set(kmers_valid)
+                    )
                 else:
-                    raise ValueError("wordcloud_score must be 'cliff_delta' or 'median_ratio'.")
-
-                # Do not remove or replace selected proteins based on plotting scores
-                invalid = ~np.isfinite(df_wc["wordcloud_score"]) | (df_wc["wordcloud_score"] <= 0)
-                if invalid.any():
-                    names = df_wc.loc[invalid, "protein"].tolist()
-                    raise ValueError(f"Selected proteins have undefined or non-positive plotting scores: {names}")
-
-                # Audit the exact proteins passed to WordCloud
-                print(f"\n[KEA] WordCloud selection: top {len(df_wc)} by Cliff's delta")
-                print(df_wc[["protein", "zscore_diff", "wordcloud_score"]].to_string(index=False))
-
-                score_by_protein = dict(zip(df_wc["protein"], df_wc["wordcloud_score"]))
-                word_dict = score_by_protein.copy()
-                score_min, score_max = df_wc["wordcloud_score"].min(), df_wc["wordcloud_score"].max()
-
-                # Colour scale: higher scores are darker
-                if score_min == score_max:
-                    padding = max(abs(score_min) * 0.01, 0.01)
-                    norm = mpl.colors.Normalize(vmin=score_min - padding, vmax=score_max + padding)
-                else:
-                    norm = mpl.colors.Normalize(vmin=score_min, vmax=score_max)
-
-                cmap = mpl.colors.LinearSegmentedColormap.from_list("rbp_score_greys", ["#BDBDBD", "#737373", "#000000"])
-
-                def score_color_func(word, **kwargs):
-                    return mpl.colors.to_hex(cmap(norm(score_by_protein[word])))
-
-                # Choose an installed font
-                if wordcloud_font_path is None:
-                    available_fonts = {font.name for font in fm.fontManager.ttflist}
-                    font_name = next((name for name in ["Helvetica", "Liberation Sans", "Arial", "DejaVu Sans"] if name in available_fonts), "DejaVu Sans")
-                    font_path = fm.findfont(fm.FontProperties(family=font_name))
-                else:
-                    font_path = str(wordcloud_font_path)
-                    fm.fontManager.addfont(font_path)
-                    font_name = fm.FontProperties(fname=font_path).get_name()
-
-                # Automatic starting size and relative scaling
-                canvas_width, canvas_height = 1600, 700
-                wc = WordCloud(
-                    width=canvas_width, height=canvas_height, background_color="white",
-                    color_func=score_color_func, font_path=font_path,
-                    min_font_size=12, max_font_size=None, relative_scaling="auto",
-                    prefer_horizontal=1.0, random_state=42, collocations=False,
-                    max_words=len(word_dict), repeat=False, margin=6
-                ).generate_from_frequencies(word_dict)
-
-                if len(wc.layout_) != len(word_dict):
-                    raise ValueError("Not all proteins fit. Increase canvas_width or canvas_height, or reduce min_font_size.")
-
-                # Plot
-                with plt.rc_context({"font.family": font_name, "font.size": 12, "axes.titleweight": "bold", "axes.labelweight": "bold"}):
-                    fig, ax = plt.subplots(figsize=(15, 6), dpi=150)
-                    ax.imshow(wc.to_array(), interpolation="bilinear")
-                    ax.axis("off")
-                    ax.set_title(f"RBP enrichment by {title_score}", fontsize=16, fontweight="bold", pad=15)
-
-                    # Colour legend
-                    scalar_mappable = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-                    scalar_mappable.set_array([])
-                    cbar = fig.colorbar(scalar_mappable, ax=ax, fraction=0.025, pad=0.025, shrink=0.80)
-                    cbar.set_label(score_label, fontsize=12, fontweight="bold", labelpad=12)
-
-                    if score_min == score_max:
-                        cbar.set_ticks([score_min])
-
-                    for label in cbar.ax.get_yticklabels():
-                        label.set_fontsize(10)
-                        label.set_fontweight("bold")
-
-                    cbar.outline.set_linewidth(0.8)
-                    fig.tight_layout()
-
+                    background_kmers = bg_kmers_valid
+    
+                MAX_BG_RATIO = 10
+                if (
+                    len(background_kmers)
+                    > MAX_BG_RATIO * len(kmers_valid)
+                ):
+                    rng = np.random.default_rng(42)
+                    background_kmers = list(
+                        rng.choice(
+                            background_kmers,
+                            size=MAX_BG_RATIO * len(kmers_valid),
+                            replace=False
+                        )
+                    )
+    
+                def cliffs_delta(x, y):
+                    import numpy as np
+    
+                    x = np.asarray(x)
+                    y = np.asarray(y)
+                    n = len(x)
+                    m = len(y)
+                    greater = sum((xi > y).sum() for xi in x)
+                    less = sum((xi < y).sum() for xi in x)
+                    return (greater - less) / (n * m)
+    
+                results = []
+    
+                for col in df_zscore.columns:
+                    g1 = (
+                        df_zscore.loc[kmers_valid, col]
+                        .dropna().values
+                    )
+                    g2 = (
+                        df_zscore.loc[background_kmers, col]
+                        .dropna().values
+                    )
+    
+                    if len(g1) < 2 or len(g2) < 2:
+                        continue
+    
+                    mean1, mean2 = np.mean(g1), np.mean(g2)
+                    med1, med2 = np.median(g1), np.median(g2)
+                    sd1, sd2 = np.std(g1), np.std(g2)
+    
+                    if test == "mwu":
+                        stat, pval = mannwhitneyu(
+                            g1, g2, alternative="greater"
+                        )
+                        effect = (
+                            1 - (2 * stat) / (len(g1) * len(g2))
+                        )
+                    elif test == "ks":
+                        stat, pval = ks_2samp(
+                            g1, g2, alternative="greater"
+                        )
+                        effect = stat
+                    else:
+                        raise ValueError(
+                            f"Unknown test '{test}'."
+                        )
+    
+                    zscore_diff = cliffs_delta(g1, g2)
+    
+                    results.append({
+                        "protein": col,
+                        "mean_group1": mean1,
+                        "mean_group2": mean2,
+                        "median_group1": med1,
+                        "median_group2": med2,
+                        "sd1": sd1,
+                        "sd2": sd2,
+                        "effect_size": effect,
+                        "pvalue": pval,
+                        "zscore_diff": zscore_diff,
+                        "n1": len(g1),
+                        "n2": len(g2)
+                    })
+    
+            # ----------------------------------------------------------------
+            # 5. MULTIPLE TESTING CORRECTION
+            # ----------------------------------------------------------------
+            results = pd.DataFrame(results)
+    
+            if len(results) == 0:
+                print("[KEA] Warning: no results generated.")
+                return results
+    
+            results["fdr"] = multipletests(
+                results["pvalue"], method="fdr_bh"
+            )[1]
+            results["bonf"] = multipletests(
+                results["pvalue"], method="bonferroni"
+            )[1]
+            results["significant_fdr"] = (
+                results["fdr"] < fdr_alpha
+            )
+            results["significant_bonf"] = (
+                results["bonf"] < fdr_alpha
+            )
+            results = (
+                results.sort_values("fdr")
+                .reset_index(drop=True)
+            )
+    
+            n_sig_fdr = results["significant_fdr"].sum()
+            n_sig_bonf = results["significant_bonf"].sum()
+            print(
+                f"[KEA] Significant proteins — "
+                f"FDR<{fdr_alpha}: {n_sig_fdr} | "
+                f"Bonferroni<{fdr_alpha}: {n_sig_bonf}"
+            )
+    
+            # ----------------------------------------------------------------
+            # 6. VISUALIZATION
+            # ----------------------------------------------------------------
+            if plot:
+                df_plot = results.copy()
+                df_plot["neglog10p"] = -np.log10(
+                    df_plot["pvalue"] + 1e-300
+                )
+                sig_mask = (
+                    (df_plot[p_col] < p_thresh)
+                    & (np.abs(df_plot["zscore_diff"]) > fc_thresh)
+                )
+    
+                hl_mask = pd.Series(False, index=df_plot.index)
+                if highlight is not None:
+                    if isinstance(highlight, str):
+                        highlight = [highlight]
+                    hl_mask = df_plot["protein"].str.contains(
+                        "|".join(highlight),
+                        case=False,
+                        na=False
+                    )
+    
+                hl_top_mask = pd.Series(
+                    False, index=df_plot.index
+                )
+                if highlight_top_n is not None:
+                    sig = df_plot[sig_mask]
+                    top_idx = sig.nlargest(
+                        highlight_top_n, "zscore_diff"
+                    ).index
+                    hl_top_mask = df_plot.index.isin(top_idx)
+    
+                # ------------------------------------------------------------
+                # VOLCANO PLOT
+                # ------------------------------------------------------------
+                if plot_type == "volcano":
+                    fig, ax = plt.subplots(figsize=(9, 7))
+                    ax.scatter(
+                        df_plot.loc[~sig_mask, "zscore_diff"],
+                        df_plot.loc[~sig_mask, "neglog10p"],
+                        color="lightgrey",
+                        alpha=0.5,
+                        s=25,
+                        label="n.s."
+                    )
+                    ax.scatter(
+                        df_plot.loc[
+                            sig_mask & ~hl_mask, "zscore_diff"
+                        ],
+                        df_plot.loc[
+                            sig_mask & ~hl_mask, "neglog10p"
+                        ],
+                        color="tomato",
+                        alpha=0.8,
+                        s=35,
+                        label="significant"
+                    )
+                    ax.scatter(
+                        df_plot.loc[hl_mask, "zscore_diff"],
+                        df_plot.loc[hl_mask, "neglog10p"],
+                        color="royalblue",
+                        edgecolor="black",
+                        s=110,
+                        label="highlight"
+                    )
+                    for _, row in df_plot.loc[
+                        hl_mask | hl_top_mask
+                    ].iterrows():
+                        ax.text(
+                            row["zscore_diff"],
+                            row["neglog10p"],
+                            row["protein"],
+                            fontsize=8,
+                            ha="left",
+                            va="bottom"
+                        )
+    
+                    ax.axhline(
+                        -np.log10(p_thresh),
+                        linestyle="--",
+                        color="grey",
+                        linewidth=0.8
+                    )
+                    ax.axvline(
+                        fc_thresh,
+                        linestyle="--",
+                        color="grey",
+                        linewidth=0.8
+                    )
+                    ax.axvline(
+                        -fc_thresh,
+                        linestyle="--",
+                        color="grey",
+                        linewidth=0.8
+                    )
+                    ax.set_xlabel(
+                        "Cliff’s delta (group1 vs background)"
+                    )
+                    ax.set_ylabel("-log10(pvalue)")
+                    ax.set_title("Volcano plot (Cliff’s delta)")
+                    ax.legend(fontsize=8)
+    
                     if save is not None:
-                        filenames = save if isinstance(save, (list, tuple)) else [save]
+                        filenames = (
+                            save
+                            if isinstance(save, (list, tuple))
+                            else [save]
+                        )
                         for filename in filenames:
-                            fig.savefig(filename, dpi=600, bbox_inches="tight", facecolor="white")
-
+                            fig.savefig(
+                                filename,
+                                dpi=600,
+                                bbox_inches="tight",
+                                facecolor="white"
+                            )
+    
+                    plt.tight_layout()
                     plt.show()
-                    plt.close(fig)
-        
-        return results
+                    plt.close()
+    
+                # ------------------------------------------------------------
+                # LOLLIPOP PLOT
+                # ------------------------------------------------------------
+                elif plot_type == "lollipop":
+                    sig = df_plot[sig_mask].sort_values(
+                        "zscore_diff"
+                    )
+                    fig, ax = plt.subplots(
+                        figsize=(9, max(4, len(sig) * 0.35))
+                    )
+                    ax.hlines(
+                        sig["protein"],
+                        0,
+                        sig["zscore_diff"],
+                        color="grey",
+                        alpha=0.6
+                    )
+                    ax.scatter(
+                        sig["zscore_diff"],
+                        sig["protein"],
+                        c="tomato",
+                        s=40
+                    )
+                    sig_hl_mask = sig["protein"].isin(
+                        df_plot.loc[hl_mask, "protein"]
+                    )
+                    ax.scatter(
+                        sig.loc[sig_hl_mask, "zscore_diff"],
+                        sig.loc[sig_hl_mask, "protein"],
+                        c="royalblue",
+                        edgecolor="black",
+                        s=110
+                    )
+                    ax.set_xlabel("Cliff’s delta")
+                    ax.set_ylabel("Protein")
+                    ax.set_title(
+                        "Lollipop plot (significant proteins)"
+                    )
+    
+                    if save is not None:
+                        filenames = (
+                            save
+                            if isinstance(save, (list, tuple))
+                            else [save]
+                        )
+                        for filename in filenames:
+                            fig.savefig(
+                                filename,
+                                dpi=600,
+                                bbox_inches="tight",
+                                facecolor="white"
+                            )
+    
+                    plt.tight_layout()
+                    plt.show()
+    
+                # ------------------------------------------------------------
+                # BARPLOT
+                # ------------------------------------------------------------
+                elif plot_type == "barplot":
+                    df_bar = df_plot.copy().sort_values(
+                        "zscore_diff"
+                    )
+                    colors = [
+                        "tomato"
+                        if (
+                            row[p_col] < p_thresh
+                            and abs(row["zscore_diff"]) > fc_thresh
+                        )
+                        else "lightgrey"
+                        for _, row in df_bar.iterrows()
+                    ]
+                    fig, ax = plt.subplots(
+                        figsize=(max(9, len(df_bar) * 0.25), 6)
+                    )
+                    ax.bar(
+                        df_bar["protein"],
+                        df_bar["zscore_diff"],
+                        color=colors
+                    )
+                    ax.set_xlim(-0.5, len(df_bar) - 0.5)
+                    ax.axhline(
+                        0, color="black", linewidth=0.8
+                    )
+                    ax.set_ylabel("Cliff’s delta")
+                    ax.set_xlabel("Protein")
+                    ax.set_title(
+                        "Cliff’s delta — All proteins (barplot)"
+                    )
+                    plt.xticks(rotation=90)
+                    plt.tight_layout()
+    
+                    if save is not None:
+                        filenames = (
+                            save
+                            if isinstance(save, (list, tuple))
+                            else [save]
+                        )
+                        for filename in filenames:
+                            fig.savefig(
+                                filename,
+                                dpi=600,
+                                bbox_inches="tight",
+                                facecolor="white"
+                            )
+    
+                    plt.show()
+    
+                # ------------------------------------------------------------
+                # WORDCLOUD
+                # ------------------------------------------------------------
+                elif plot_type == "wordcloud":
+                    df_wc = df_plot.loc[
+                        (df_plot[p_col] < p_thresh)
+                        & (df_plot["zscore_diff"] >= fc_thresh)
+                    ].copy()
+                    df_wc = df_wc.dropna(
+                        subset=["protein", "zscore_diff"]
+                    )
+                    df_wc = df_wc.loc[
+                        np.isfinite(df_wc["zscore_diff"])
+                    ].copy()
+                    df_wc["protein"] = (
+                        df_wc["protein"].astype(str).str.strip()
+                    )
+                    df_wc = df_wc.loc[
+                        df_wc["protein"].ne("")
+                    ]
+                    df_wc = df_wc.drop_duplicates(
+                        subset="protein", keep="first"
+                    )
+    
+                    if wordcloud_top_n is not None:
+                        if (
+                            not isinstance(
+                                wordcloud_top_n, (int, np.integer)
+                            )
+                            or wordcloud_top_n < 1
+                        ):
+                            raise ValueError(
+                                "wordcloud_top_n must be a "
+                                "positive integer or None."
+                            )
+                        df_wc = df_wc.head(wordcloud_top_n)
+    
+                    if df_wc.empty:
+                        raise ValueError(
+                            "No proteins passed the selected thresholds."
+                        )
+    
+                    if wordcloud_score == "cliff_delta":
+                        df_wc["wordcloud_score"] = (
+                            df_wc["zscore_diff"]
+                        )
+                        score_label = "Cliff’s delta"
+                        title_score = "Cliff’s delta"
+                    elif wordcloud_score == "median_ratio":
+                        denominator = df_wc["median_group2"] + 1
+                        df_wc["wordcloud_score"] = (
+                            df_wc["median_group1"]
+                            / denominator.mask(
+                                np.isclose(denominator, 0)
+                            )
+                        )
+                        score_label = (
+                            "Median group 1 / (median group 2 + 1)"
+                        )
+                        title_score = "median-ratio score"
+                    else:
+                        raise ValueError(
+                            "wordcloud_score must be "
+                            "'cliff_delta' or 'median_ratio'."
+                        )
+    
+                    invalid = (
+                        ~np.isfinite(df_wc["wordcloud_score"])
+                        | (df_wc["wordcloud_score"] <= 0)
+                    )
+                    if invalid.any():
+                        names = df_wc.loc[
+                            invalid, "protein"
+                        ].tolist()
+                        raise ValueError(
+                            "Selected proteins have undefined or "
+                            f"non-positive plotting scores: {names}"
+                        )
+    
+                    print(
+                        f"\n[KEA] WordCloud selection: "
+                        f"top {len(df_wc)} by Cliff's delta"
+                    )
+                    print(
+                        df_wc[
+                            ["protein", "zscore_diff", "wordcloud_score"]
+                        ].to_string(index=False)
+                    )
+    
+                    score_by_protein = dict(zip(
+                        df_wc["protein"],
+                        df_wc["wordcloud_score"]
+                    ))
+                    word_dict = score_by_protein.copy()
+                    score_min = df_wc["wordcloud_score"].min()
+                    score_max = df_wc["wordcloud_score"].max()
+    
+                    if score_min == score_max:
+                        padding = max(
+                            abs(score_min) * 0.01, 0.01
+                        )
+                        norm = mpl.colors.Normalize(
+                            vmin=score_min - padding,
+                            vmax=score_max + padding
+                        )
+                    else:
+                        norm = mpl.colors.Normalize(
+                            vmin=score_min, vmax=score_max
+                        )
+    
+                    cmap = (
+                        mpl.colors.LinearSegmentedColormap.from_list(
+                            "rbp_score_greys",
+                            ["#BDBDBD", "#737373", "#000000"]
+                        )
+                    )
+    
+                    def score_color_func(word, **kwargs):
+                        return mpl.colors.to_hex(
+                            cmap(norm(score_by_protein[word]))
+                        )
+    
+                    if wordcloud_font_path is None:
+                        available_fonts = {
+                            font.name
+                            for font in fm.fontManager.ttflist
+                        }
+                        font_name = next(
+                            (
+                                name
+                                for name in [
+                                    "Helvetica",
+                                    "Liberation Sans",
+                                    "Arial",
+                                    "DejaVu Sans"
+                                ]
+                                if name in available_fonts
+                            ),
+                            "DejaVu Sans"
+                        )
+                        font_path = fm.findfont(
+                            fm.FontProperties(family=font_name)
+                        )
+                    else:
+                        font_path = str(wordcloud_font_path)
+                        fm.fontManager.addfont(font_path)
+                        font_name = fm.FontProperties(
+                            fname=font_path
+                        ).get_name()
+    
+                    canvas_width, canvas_height = 1600, 700
+                    wc = WordCloud(
+                        width=canvas_width,
+                        height=canvas_height,
+                        background_color="white",
+                        color_func=score_color_func,
+                        font_path=font_path,
+                        min_font_size=12,
+                        max_font_size=None,
+                        relative_scaling="auto",
+                        prefer_horizontal=1.0,
+                        random_state=42,
+                        collocations=False,
+                        max_words=len(word_dict),
+                        repeat=False,
+                        margin=6
+                    ).generate_from_frequencies(word_dict)
+    
+                    if len(wc.layout_) != len(word_dict):
+                        raise ValueError(
+                            "Not all proteins fit. Increase canvas_width "
+                            "or canvas_height, or reduce min_font_size."
+                        )
+    
+                    with plt.rc_context({
+                        "font.family": font_name,
+                        "font.size": 12,
+                        "axes.titleweight": "bold",
+                        "axes.labelweight": "bold"
+                    }):
+                        fig, ax = plt.subplots(
+                            figsize=(15, 6), dpi=150
+                        )
+                        ax.imshow(
+                            wc.to_array(), interpolation="bilinear"
+                        )
+                        ax.axis("off")
+                        ax.set_title(
+                            f"RBP enrichment by {title_score}",
+                            fontsize=16,
+                            fontweight="bold",
+                            pad=15
+                        )
+    
+                        scalar_mappable = mpl.cm.ScalarMappable(
+                            norm=norm, cmap=cmap
+                        )
+                        scalar_mappable.set_array([])
+                        cbar = fig.colorbar(
+                            scalar_mappable,
+                            ax=ax,
+                            fraction=0.025,
+                            pad=0.025,
+                            shrink=0.80
+                        )
+                        cbar.set_label(
+                            score_label,
+                            fontsize=12,
+                            fontweight="bold",
+                            labelpad=12
+                        )
+    
+                        if score_min == score_max:
+                            cbar.set_ticks([score_min])
+    
+                        for label in cbar.ax.get_yticklabels():
+                            label.set_fontsize(10)
+                            label.set_fontweight("bold")
+    
+                        cbar.outline.set_linewidth(0.8)
+                        fig.tight_layout()
+    
+                        if save is not None:
+                            filenames = (
+                                save
+                                if isinstance(save, (list, tuple))
+                                else [save]
+                            )
+                            for filename in filenames:
+                                fig.savefig(
+                                    filename,
+                                    dpi=600,
+                                    bbox_inches="tight",
+                                    facecolor="white"
+                                )
+    
+                        plt.show()
+                        plt.close(fig)
+    
+            return results
 
     def ImportMetaTx(self,file_name,header="yes"):
         if header == "yes":
@@ -3972,150 +3450,1799 @@ class KEA():
         self.kmer_cluster_map = kmer_cluster_map
         return kmer_cluster_map
 
+ 
+
+    def AnnotateMiRNASeeds(self, kmers=None, source="KEA", reference=None, species=None, species_id=9606, plot=True, top_n=20, output_dir=None):
+
+        """Annotate RNA-oriented 7-mers against miRNA positions 2-8.
+    
+        Exact target 7mer-m8 matches only, using reverse-complemented Seed+m8.
+        KEA defaults to the enriched delta_median/stat_log2fc intersection;
+        KRS defaults to its selected signature and target percentile scores.
+        source='manual' accepts explicit kmers without analysis scores.
+        No new miRNA-level hypothesis test or combined KEA score is computed.
+        """
+    
+        if source not in {"KEA", "KRS", "manual"}:
+            raise ValueError("source must be KEA, KRS or manual")
+        if not isinstance(top_n, (int, np.integer)) or top_n < 1:
+            raise ValueError("top_n must be a positive integer")
+        if output_dir is not None and Path(output_dir).exists():
+            raise FileExistsError("output_dir must be a new directory")
+        key = species or "input"
+        family = pd.read_csv(self.seed_family_file, sep="\t")
+        required = {"miR family", "Seed+m8", "Species ID", "MiRBase ID"}
+        if not required.issubset(family.columns):
+            raise ValueError(f"Family file requires columns: {sorted(required)}")
+        family = family.loc[pd.to_numeric(family["Species ID"], errors="coerce").eq(int(species_id))].copy()
+        if family.empty:
+            raise ValueError("No family records for selected species_id")
+        family["seed_rna"] = family["Seed+m8"].astype(str).str.upper().str.replace("T", "U", regex=False)
+        if not family.seed_rna.map(lambda s: bool(re.fullmatch("[ACGU]{7}", s))).all():
+            raise ValueError("Seed+m8 must contain canonical 7-nt seeds")
+        if "Mature sequence" in family:
+            mature = family["Mature sequence"].astype(str).str.upper().str.replace("T", "U", regex=False)
+            if not mature.str[1:8].eq(family.seed_rna).all():
+                raise ValueError("Seed+m8 does not match mature miRNA positions 2-8")
+    
+        family["target_kmer"] = family.seed_rna.map(lambda s: str(Seq(s.replace("U", "T")).reverse_complement()))
+        family["target_rna"] = family.target_kmer.str.replace("T", "U", regex=False)
+    
+        def names(series):
+            return ";".join(sorted(set(series.dropna().astype(str))))
+        aggregations = {"mirnas": ("MiRBase ID", names)}
+    
+        if "MiRBase Accession" in family:
+            aggregations["accessions"] = ("MiRBase Accession", names)
+        annotations = family.groupby(["miR family", "seed_rna", "target_kmer", "target_rna"], as_index=False).agg(**aggregations)
+        annotations = annotations.rename(columns={"miR family": "mirna_family"})
+        scores = None
+        state = (self.KEA_results or {}).get(key, {})
+    
+        if source == "KEA":
+            if not {"delta_median", "stat_log2fc"}.issubset(state):
+                raise ValueError("Run both delta_median and stat_log2fc before KEA annotation")
+            if kmers is None:
+                kmers = sorted(set(state["delta_median"]["enriched"]) & set(state["stat_log2fc"]["enriched"]))
+            delta = state["delta_median"]["all_kmers"]
+            stat = state["stat_log2fc"]["all_kmers"]
+            scores = delta[["delta_median"]].join(stat[[c for c in ["log2FoldChange", "PValue", "FDR", "bonf"] if c in stat]], how="outer")
+        elif source == "KRS":
+            krs = state.get("KRS")
+            if not isinstance(krs, dict):
+                raise ValueError("Run KRS before KRS annotation")
+            if reference is not None and reference != krs["reference"]:
+                raise ValueError("Stored KRS result belongs to a different reference; rerun KRS")
+            reference = krs["reference"]
+            if kmers is None:
+                kmers = krs["signature"]
+            scores = krs["kmer_ranks"].set_index("kmer")[["target_frequency", "target_rank_percentile", "selected_KRS"]]
+        elif kmers is None:
+            raise ValueError("Supply kmers for source=manual")
+        if isinstance(kmers, str):
+            kmers = [kmers]
+        words = list(dict.fromkeys(str(k).upper().replace("U", "T") for k in kmers))
+        if any(not re.fullmatch("[ACGT]{7}", k) for k in words):
+            raise ValueError("Query words must be canonical 7-mers; no automatic decomposition")
+        query = pd.DataFrame({"kmer": pd.Series(words, dtype=str)})
+        if scores is not None:
+            scores = scores.copy()
+            scores.index = scores.index.astype(str).str.upper().str.replace("U", "T", regex=False)
+            if not scores.index.is_unique:
+                raise ValueError("Analysis scores must have unique normalized k-mer rows")
+            query = query.merge(scores, left_on="kmer", right_index=True, how="left", validate="one_to_one")
+        matches = query.merge(annotations, left_on="kmer", right_on="target_kmer", how="inner", validate="one_to_many")
+        query["matched_family_count"] = query.kmer.map(matches.groupby("kmer").mirna_family.nunique()).fillna(0).astype(int)
+        figures = []
+        if plot and len(matches) and source != "manual":
+            import matplotlib.pyplot as plt
+            metrics = ["delta_median", "log2FoldChange"] if source == "KEA" else ["target_rank_percentile"]
+            sorting = "log2FoldChange" if source == "KEA" else "target_rank_percentile"
+            shown = matches.sort_values(sorting, ascending=False, na_position="last").head(top_n).copy()
+            shown["label"] = shown.mirna_family + " | " + shown.kmer
+            fig, axes = plt.subplots(1, len(metrics), figsize=(7*len(metrics), max(3, 0.35*len(shown)+1)), squeeze=False)
+            for ax, metric in zip(axes[0], metrics):
+                ax.barh(range(len(shown)), shown[metric], color="#4477AA")
+                ax.set_yticks(range(len(shown)), shown.label)
+                ax.invert_yaxis()
+                ax.set_xlabel(metric)
+                ax.set_title("Matched k-mer score (not family-level inference)")
+                if source == "KRS":
+                    ax.set_xlim(0, 1)
+            fig.tight_layout()
+            figures.append(fig)
+        base = Path(self.dir_out)
+        if output_dir is None:
+            base.mkdir(parents=True, exist_ok=True)
+            destination = Path(tempfile.mkdtemp(prefix="MiRNASeeds_", dir=base))
+        else:
+            destination = Path(output_dir)
+            destination.mkdir(parents=True, exist_ok=False)
+        query.to_csv(destination/"query_kmers.tsv", sep="\t", index=False)
+        matches.to_csv(destination/"seed_matches.tsv", sep="\t", index=False)
+        annotations.to_csv(destination/"family_seed_map.tsv", sep="\t", index=False)
+        for fig in figures:
+            fig.savefig(destination/"seed_scores.png", dpi=180, bbox_inches="tight")
+            fig.savefig(destination/"seed_scores.pdf", bbox_inches="tight")
+        settings = dict(family_file=str(self.seed_family_file), species_id=int(species_id), source=source,
+                        reference=reference, species=key, query_kmers=words,
+                        site_type="7mer-m8", seed_orientation="miRNA positions 2-8; reverse complement to target",
+                        plot=plot, top_n=top_n)
+        (destination/"settings.json").write_text(json.dumps(settings, indent=2))
+        result = dict(matches=matches, query=query, seed_map=annotations, figures=figures,
+                      settings=settings, output_dir=str(destination))
+        self.mirna_seed_annotation = result
+        return result
+
+    def K_CDS(
+    self, gtf_file=None, uniprot_dir=None,
+    kmers=None, method='stat_log2fc', species=None,
+    in_frame=False, background='shuffle', tracks=("unipLocCytopl","unipLocExtra","unipLocSignal","unipLocTransMemb",),
+    alpha=0.05, fdr_scope='global', split_blocks=True,
+    seed=42, output_dir=None, plot=True, max_domains=60,
+    ref_fasta=None, ctrl_fasta=None, *,
+    positional_enrichment=None, bed_feature=None,
+    recompute_positional=False, final_plots=None, rscript='Rscript',
+    frame_threshold=0.5, start_fraction=0.10, color_cap=2,
+    show_final=True):
+
+        """
+    
+            Domain/frame tables and statistics are preserved. Only the final R panels are plotted.
+            final_plots defaults to plot. R, ComplexHeatmap and circlize are required
+            only for final panels. Pass final_plots=False for the original behaviour.
+            positional_enrichment accepts a TSV path or a DataFrame. When omitted,
+            search the last result directory, dir_out/K_CDS and dir_out for the TSV.
+            A supplied cache is validated and reused; it is never silently recomputed.
+            Missing positional data are computed automatically from existing BED and
+            metatranscript inputs, or from FASTA/GTF if those inputs are unavailable.
+            Previously computed per-k-mer EnrichmentAnalysis results are reused.
+            recompute_positional=True explicitly requests this positional calculation.
+            Frame/domain tests still compare reference with the chosen background.
+            """
+
+        if gtf_file is None or uniprot_dir is None:
+            raise ValueError('Supply gtf_file and uniprot_dir for matching GRCh38 resources')
+        if background not in {'control', 'shuffle'}:
+            raise ValueError("background must be 'control' or 'shuffle'")
+        if fdr_scope not in {'global', 'kmer'} or not 0 < alpha < 1:
+            raise ValueError('Invalid fdr_scope or alpha')
+        if max_domains is not None and max_domains < 1:
+            raise ValueError('max_domains must be positive or None')
+        if output_dir is not None and Path(output_dir).exists():
+            raise FileExistsError(f'Refusing to overwrite existing directory: {output_dir}')
+        key = species or 'input'
+        if kmers is None:
+            try:
+                kmers = self.KEA_results[key][method]['enriched']
+            except (KeyError, TypeError):
+                raise ValueError('Run ExtractKmers first or supply kmers explicitly') from None
+        if isinstance(kmers, str):
+            kmers = [kmers]
+        kmers = list(dict.fromkeys((str(k).upper().replace('U', 'T') for k in kmers)))
+        if not kmers or any((not re.fullmatch('[ACGT]+', k) for k in kmers)):
+            raise ValueError('Supply at least one DNA/RNA k-mer without ambiguous bases')
+        if key != 'input':
+            raise ValueError('K-CDS supports the human input KEA object; species must be None or input')
+        if isinstance(tracks, str):
+            tracks = (tracks,)
+        allowed = {'unipDomain', 'unipInterest', 'unipStruct', 'unipLocTransMemb', 'unipLocExtra', 'unipLocSignal', 'unipLocCytopl', 'unipRepeat'}
+        if not tracks or not set(tracks) <= allowed:
+            raise ValueError('Unsupported track; use a UniProt feature track')
+
+        final_plots = bool(plot) if final_plots is None else bool(final_plots)
+        positional = None
+        positional_source = None
+        r_executable = None
+        if final_plots:
+            if len(kmers) < 2:
+                raise ValueError('At least two k-mers are required for the final clusters')
+            if not np.isfinite(color_cap) or color_cap <= 0:
+                raise ValueError('color_cap must be finite and positive')
+            if not np.isfinite(frame_threshold) or not 0 <= frame_threshold <= 1:
+                raise ValueError('frame_threshold must be between 0 and 1')
+            if not np.isfinite(start_fraction) or not 0 < start_fraction < 1:
+                raise ValueError('start_fraction must be between 0 and 1')
+            r_executable = shutil.which(str(rscript))
+            if r_executable is None:
+                raise RuntimeError('Rscript not found. Install R or set final_plots=False.')
+            probe = subprocess.run(
+                [r_executable, '--vanilla', '-e',
+                 'if (!all(vapply(c("ComplexHeatmap", "circlize"), requireNamespace, logical(1), quietly=TRUE))) stop("Install ComplexHeatmap and circlize")'],
+                capture_output=True, text=True
+            )
+            if probe.returncode:
+                raise RuntimeError('R dependency check failed:\n' + probe.stdout + probe.stderr)
+            source = positional_enrichment
+            if source is None and not recompute_positional:
+                # Only per-k-mer analyses are reusable: a pooled signature is not.
+                existing = getattr(self, 'enrichment', None)
+                memory_parts = []
+                if isinstance(existing, pd.DataFrame) and {'analysis','bin','log2_or'}.issubset(existing.columns):
+                    for kmer in kmers:
+                        part = existing.loc[existing['analysis'].eq(kmer + '_Enr_VS_Ctrl')].copy()
+                        if 'type_analysis' in part:
+                            part = part.loc[part['type_analysis'].eq('kmers')]
+                        if part.empty:
+                            continue
+                        # EnrichmentAnalysis appends results on repeated calls.
+                        part = part.drop_duplicates('bin', keep='last')
+                        cds_part = part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+')]
+                        if len(cds_part) < 2 or not np.isfinite(pd.to_numeric(cds_part['log2_or'], errors='coerce')).all():
+                            continue
+                        part['kmer'] = kmer
+                        if 'fdr' not in part:
+                            part['fdr'] = np.nan
+                        memory_parts.append(part[['kmer','bin','log2_or','fdr']])
+                if memory_parts:
+                    source = pd.concat(memory_parts, ignore_index=True)
+                    positional_source = 'self.enrichment: per-k-mer Enr/Ctrl results'
+                else:
+                    previous = getattr(self, 'k_cds', None)
+                    if isinstance(previous, dict) and isinstance(previous.get('positional_enrichment'), pd.DataFrame):
+                        source = previous['positional_enrichment']
+                    candidates = []
+                    if isinstance(previous, dict) and previous.get('output_dir'):
+                        candidates.append(Path(previous['output_dir']) / 'positional_enrichment.tsv')
+                    candidates.extend([
+                        Path(self.dir_out) / 'K_CDS' / 'positional_enrichment.tsv',
+                        Path(self.dir_out) / 'positional_enrichment.tsv'
+                    ])
+                    if source is None:
+                        source = next((path for path in candidates if path.is_file()), None)
+            if not recompute_positional and source is not None:
+                if isinstance(source, pd.DataFrame):
+                    positional = source.copy()
+                    positional_source = positional_source or 'supplied DataFrame'
+                else:
+                    cache = Path(source).expanduser()
+                    if not cache.is_file():
+                        raise FileNotFoundError(cache)
+                    positional = pd.read_csv(cache, sep='\t')
+                    positional_source = str(cache.resolve())
+                print('Reusing positional enrichment:', positional_source)
+
+        def txid(s):
+            return re.sub('\\.\\d+$', '', str(s))
+
+        def fasta(path):
+            result = {}
+            op = gzip.open if str(path).endswith('.gz') else open
+            with op(path, 'rt') as handle:
+                for rec in SeqIO.parse(handle, 'fasta'):
+                    name = txid(rec.id)
+                    if name in result:
+                        raise ValueError(f'Duplicate normalized FASTA transcript ID: {name}')
+                    result[name] = str(rec.seq).upper().replace('U', 'T')
+            return result
+        reference_path = ref_fasta if ref_fasta is not None else self.reference_fasta
+        control_path = ctrl_fasta if ctrl_fasta is not None else self.control_fasta
+        ref = fasta(reference_path)
+        ctrl = fasta(control_path) if background == 'control' else {}
+        if set(ref) & set(ctrl):
+            raise ValueError('Reference and control transcript sets must be disjoint')
+        seqs = {**ref, **ctrl}
+        if final_plots:
+            # Determine which per-k-mer profiles are missing/incomplete.
+            reusable = {}
+            if positional is not None:
+                required = {'kmer','bin','log2_or'}
+                if not required.issubset(positional.columns):
+                    raise ValueError('Positional input requires kmer, bin and log2_or')
+                positional = positional.copy()
+                positional['kmer'] = positional['kmer'].astype(str).str.upper().str.replace('U','T',regex=False)
+                if positional.duplicated(['kmer','bin']).any():
+                    raise ValueError('Duplicate positional k-mer/bin pairs')
+                for kmer in kmers:
+                    part = positional.loc[positional['kmer'].eq(kmer)].copy()
+                    cds_part = part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+')]
+                    if len(cds_part) >= 2 and np.isfinite(pd.to_numeric(cds_part['log2_or'],errors='coerce')).all():
+                        if 'fdr' not in part:
+                            part['fdr'] = np.nan
+                        reusable[kmer] = part[['kmer','bin','log2_or','fdr']]
+            # Require a shared, complete set of CDS bins.
+            expected_bins = set()
+            for part in reusable.values():
+                expected_bins.update(part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+'),'bin'])
+            meta = getattr(self,'metatx',None)
+            if isinstance(meta,pd.DataFrame) and 'name' in meta:
+                expected_bins.update(meta.loc[meta['name'].astype(str).str.fullmatch(r'CDS_\d+'),'name'])
+            reusable = {k:part for k,part in reusable.items()
+                        if set(part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+'),'bin']) == expected_bins}
+            missing = [k for k in kmers if k not in reusable]
+            if positional_enrichment is not None and not recompute_positional and missing:
+                raise ValueError('Explicit positional input is incomplete for: ' + ', '.join(missing))
+            if missing:
+                if any(len(kmer) != 7 for kmer in missing):
+                    raise ValueError('Automatic EnrichmentAnalysis positional counting uses k=7. Supply positional_enrichment for other word lengths.')
+                # Load full transcripts from both populations, even with shuffle.
+                full_sequences = {}
+                group_ids = []
+                for path in [reference_path,control_path]:
+                    ids = []
+                    op = gzip.open if str(path).endswith('.gz') else open
+                    with op(path,'rt') as handle:
+                        for rec in SeqIO.parse(handle,'fasta'):
+                            if rec.id in full_sequences:
+                                raise ValueError('Duplicate/disjoint FASTA ID problem: ' + rec.id)
+                            ids.append(rec.id)
+                            full_sequences[rec.id] = str(rec.seq).upper().replace('U','T')
+                    group_ids.append(ids)
+                ref_ids,ctrl_ids = group_ids
+                # Prefer the same metatranscript already used by the notebook.
+                if meta is None:
+                    candidates = list(Path(self.dir_out).glob('metatx*.bed'))
+                    valid_meta = []
+                    for path in candidates:
+                        table_meta = pd.read_csv(path,sep='\t')
+                        if {'chrom','start','end','name','score','strand'}.issubset(table_meta.columns):
+                            if table_meta['name'].astype(str).str.fullmatch(r'CDS_\d+').any():
+                                valid_meta.append((path,table_meta))
+                    if len(valid_meta) == 1:
+                        meta = valid_meta[0][1]
+                        print('Using saved metatranscript:',valid_meta[0][0])
+                if meta is None:
+                    # No previous metatranscript: build relative-position bins
+                    # from the matching GTF, using mean regional proportions.
+                    normalized_ids = {txid(name):name for name in full_sequences}
+                    if len(normalized_ids) != len(full_sequences):
+                        raise ValueError('Duplicate normalized FASTA IDs')
+                    annotations = defaultdict(lambda:{'exon':[],'CDS':[]})
+                    op = gzip.open if str(gtf_file).endswith('.gz') else open
+                    with op(gtf_file,'rt') as handle:
+                        for line in handle:
+                            if line.startswith('#'):
+                                continue
+                            fields = line.rstrip('\n').split('\t')
+                            if len(fields)!=9 or fields[2] not in {'exon','CDS'}:
+                                continue
+                            hit = re.search(r'transcript_id "([^"]+)"',fields[8])
+                            if not hit or txid(hit[1]) not in normalized_ids:
+                                continue
+                            model = annotations[normalized_ids[txid(hit[1])]]
+                            model['strand'] = fields[6]
+                            model[fields[2]].append((int(fields[3])-1,int(fields[4])))
+                    lengths = {}
+                    for name,sequence in full_sequences.items():
+                        model = annotations.get(name)
+                        if model is None or not model['exon'] or not model['CDS']:
+                            continue
+                        exons = sorted(set(model['exon']),reverse=model['strand']=='-')
+                        offsets,offset = [],0
+                        for lo,hi in exons:
+                            offsets.append((lo,hi,offset)); offset += hi-lo
+                        if offset != len(sequence):
+                            continue
+                        intervals = []
+                        for lo,hi in set(model['CDS']):
+                            for left,right,off in offsets:
+                                if left<=lo<hi<=right:
+                                    start = off+(lo-left if model['strand']=='+' else right-hi)
+                                    intervals.append((start,start+hi-lo)); break
+                        intervals = sorted(intervals)
+                        if len(intervals)!=len(set(model['CDS'])) or any(right!=left for (_,right),(left,_) in zip(intervals,intervals[1:])):
+                            continue
+                        cs,ce = intervals[0][0],intervals[-1][1]
+                        lengths[name] = (cs,ce-cs,len(sequence)-ce)
+                    if not lengths:
+                        raise ValueError('Cannot build metatranscript from the supplied FASTA/GTF')
+                    means = np.mean(list(lengths.values()),axis=0)
+                    n_bins = np.maximum(1,np.rint(100*means/means.sum()).astype(int)*3)
+                    meta_rows = []
+                    for name,region_lengths in lengths.items():
+                        offset = 0
+                        for label,size,count in zip(['5UTR','CDS','3UTR'],region_lengths,n_bins):
+                            for j in range(int(count)):
+                                lo = int(round(offset+j*size/count))
+                                hi = int(round(offset+(j+1)*size/count))
+                                if lo<hi:
+                                    meta_rows.append((name,lo,hi,label+'_'+str(j+1),1,'+'))
+                            offset += size
+                    meta = pd.DataFrame(meta_rows,columns=['chrom','start','end','name','score','strand'])
+                    print('Built metatranscript from FASTA/GTF:',n_bins.tolist())
+                self.metatx = meta
+                target_bins = set(meta.loc[meta['name'].astype(str).str.fullmatch(r'CDS_\d+'),'name'])
+                # Partial cached profiles must use the same binning as newly
+                # computed ones; recompute incompatible profiles as needed.
+                reusable = {k:part for k,part in reusable.items()
+                            if set(part.loc[part['bin'].astype(str).str.fullmatch(r'CDS_\d+'),'bin']) == target_bins}
+                missing = [k for k in kmers if k not in reusable]
+                # Use existing occurrence coordinates, or scan overlapping hits.
+                if bed_feature is not None:
+                    features = bed_feature.copy() if isinstance(bed_feature,pd.DataFrame) else pd.read_csv(bed_feature,sep='\t')
+                elif (Path(self.dir_out)/'kmers_bed.bed').is_file():
+                    features = pd.read_csv(Path(self.dir_out)/'kmers_bed.bed',sep='\t')
+                else:
+                    feature_rows = []
+                    for name,sequence in full_sequences.items():
+                        for kmer in missing:
+                            pos = sequence.find(kmer)
+                            while pos>=0:
+                                feature_rows.append((name,pos,pos+len(kmer),kmer,1,'+'))
+                                pos = sequence.find(kmer,pos+1)
+                    features = pd.DataFrame(feature_rows,columns=['chrom','start','end','name','score','strand'])
+                if not {'chrom','start','end','name','score','strand'}.issubset(features.columns):
+                    raise ValueError('Invalid k-mer BED table')
+                features['name'] = features['name'].astype(str).str.upper().str.replace('U','T',regex=False)
+                old_enrichment = getattr(self,'enrichment',None)
+                try:
+                    for kmer in missing:
+                        print('Computing missing positional profile:',kmer)
+                        piece = self.EnrichmentAnalysis(
+                            features.loc[features['name'].eq(kmer)].copy(), kmer,
+                            ref_ids,'Enr',ctrl_ids,'Ctrl',
+                            type_analysis='kmers',metatx_type='tx'
+                        ).copy()
+                        piece['kmer'] = kmer
+                        reusable[kmer] = piece[['kmer','bin','log2_or','fdr']]
+                finally:
+                    self.enrichment = old_enrichment
+                positional_source = (positional_source or '') + '; computed missing profiles with EnrichmentAnalysis'
+            positional = pd.concat([reusable[k] for k in kmers],ignore_index=True)
+            required = {'kmer', 'bin', 'log2_or'}
+            if not required.issubset(positional.columns):
+                raise ValueError('Positional columns missing: ' + str(sorted(required - set(positional.columns))))
+            if positional[['kmer', 'bin']].isna().any().any():
+                raise ValueError('Missing positional k-mer/bin identifiers')
+            positional['kmer'] = positional['kmer'].astype(str).str.upper().str.replace('U', 'T', regex=False)
+            positional['bin'] = positional['bin'].astype(str)
+            positional = positional.loc[positional['kmer'].isin(kmers)].copy()
+            if positional.duplicated(['kmer', 'bin']).any():
+                raise ValueError('Duplicate positional k-mer/bin pairs')
+            if set(positional['kmer']) != set(kmers):
+                raise ValueError('Positional data do not contain all selected k-mers')
+            positional['log2_or'] = pd.to_numeric(positional['log2_or'], errors='raise')
+            cds_rows = positional[positional['bin'].str.fullmatch(r'CDS_\d+', na=False)]
+            cds_bins = sorted(cds_rows['bin'].unique(), key=lambda b: int(b.split('_')[1]))
+            positional_matrix = cds_rows.pivot(index='kmer', columns='bin', values='log2_or').reindex(index=kmers, columns=cds_bins)
+            if len(cds_bins) < 2 or not np.isfinite(positional_matrix.to_numpy(dtype=float)).all():
+                raise ValueError('Need at least two CDS bins and a complete finite positional matrix')
+
+        models = defaultdict(lambda: {'exon': [], 'CDS': []})
+        op = gzip.open if str(gtf_file).endswith('.gz') else open
+        with op(gtf_file, 'rt') as handle:
+            for line in handle:
+                if line.startswith('#'):
+                    continue
+                f = line.rstrip('\n').split('\t')
+                if len(f) != 9 or f[2] not in {'exon', 'CDS'}:
+                    continue
+                match = re.search('transcript_id "([^"]+)"', f[8])
+                if not match or txid(match[1]) not in seqs:
+                    continue
+                name = txid(match[1])
+                chrom = f[0] if f[0].startswith('chr') else 'chr' + f[0]
+                if chrom == 'chrMT':
+                    chrom = 'chrM'
+                m = models[name]
+                if 'chrom' in m and (m['chrom'], m['strand']) != (chrom, f[6]):
+                    raise ValueError(f'Conflicting GTF loci for {name}')
+                m.update(chrom=chrom, strand=f[6])
+                m[f[2]].append((int(f[3]) - 1, int(f[4]), f[7]))
+        bins = defaultdict(list)
+        bin_size = 100000
+        for track in dict.fromkeys(tracks):
+            with open(Path(uniprot_dir) / (track + '.bed')) as handle:
+                for line in handle:
+                    if not line.strip() or line.startswith(('#', 'track', 'browser')):
+                        continue
+                    f = line.rstrip('\n').split('\t')
+                    a, b = (int(f[1]), int(f[2]))
+                    label = f[26] if track in {'unipDomain', 'unipInterest'} and len(f) > 26 else f[3]
+                    if track == 'unipInterest' and label != 'Disordered':
+                        continue
+                    if track == 'unipLocSignal' and label != 'Signal peptide':
+                        continue
+                    label = label.strip()
+                    if not label:
+                        continue
+                    if len(set(tracks)) > 1:
+                        label = track + ': ' + label
+                    blocks = [(a, b)]
+                    if split_blocks and len(f) >= 12:
+                        sizes = [int(x) for x in f[10].rstrip(',').split(',')]
+                        starts = [int(x) for x in f[11].rstrip(',').split(',')]
+                        if len(sizes) != int(f[9]) or len(starts) != len(sizes):
+                            raise ValueError('Malformed UniProt BED12 block count')
+                        blocks = [(a + s, a + s + n) for s, n in zip(starts, sizes)]
+                    for lo, hi in blocks:
+                        if not a <= lo < hi <= b:
+                            raise ValueError('Invalid UniProt BED block coordinates')
+                        for bucket in range(lo // bin_size, (hi - 1) // bin_size + 1):
+                            bins[f[0], f[5], bucket].append((lo, hi, label))
+        rows, qc, frame_rows = ([], [], [])
+        frame_rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(seed)
+        for name, seq in seqs.items():
+            m = models.get(name)
+            reason = None
+            if m is None or not m['CDS']:
+                reason = 'missing_GTF_or_non_coding'
+            elif not m['exon']:
+                reason = 'missing_exons'
+            if reason:
+                qc.append((name, reason))
+                continue
+            exons = sorted(set(((a, b) for a, b, _ in m['exon'])), reverse=m['strand'] == '-')
+            genomic_order = sorted(exons)
+            if any((b > c for (a, b), (c, d) in zip(genomic_order, genomic_order[1:]))):
+                raise ValueError(f'Overlapping GTF exons for {name}')
+            offsets, offset = ([], 0)
+            for a, b in exons:
+                offsets.append((a, b, offset))
+                offset += b - a
+            if offset != len(seq):
+                qc.append((name, 'FASTA_GTF_length_mismatch'))
+                continue
+            cds = []
+            for a, b, phase in m['CDS']:
+                contained = False
+                for lo, hi, off in offsets:
+                    if lo <= a < b <= hi:
+                        start = off + (a - lo if m['strand'] == '+' else hi - b)
+                        cds.append((start, start + b - a, int(phase)))
+                        contained = True
+                        break
+                if not contained:
+                    raise ValueError(f'CDS is not contained in an exon: {name}')
+            cds = sorted(set(cds))
+            if any((b != c for (a, b, _), (c, d, _) in zip(cds, cds[1:]))):
+                qc.append((name, 'non_contiguous_CDS'))
+                continue
+            cs, ce, phase0 = (cds[0][0], cds[-1][1], cds[0][2])
+            anchor = cs + phase0
+            if any((p != (anchor - a) % 3 for a, b, p in cds)):
+                qc.append((name, 'inconsistent_CDS_phase'))
+                continue
+            projected = set()
+            for lo, hi, off in offsets:
+                candidates = set()
+                for bucket in range(lo // bin_size, (hi - 1) // bin_size + 1):
+                    candidates.update(bins.get((m['chrom'], m['strand'], bucket), ()))
+                for a, b, label in candidates:
+                    left, right = (max(lo, a), min(hi, b))
+                    if left < right:
+                        start = off + (left - lo if m['strand'] == '+' else hi - right)
+                        projected.add((start, start + right - left, label))
+
+            def record(k, pos, group):
+                domains = tuple(sorted({label for a, b, label in projected if a < pos + len(k) and pos < b}))
+                rows.append((name, k, pos, pos + len(k), (pos - anchor) % 3, group, domains))
+            for k in kmers:
+                pos = seq.find(k, cs, ce)
+                while pos >= 0:
+                    frame_rows.append((k, (pos - anchor) % 3, 'coding' if name in ref else 'control'))
+                    if name in ref:
+                        shuffled_frame_pos = cs + int(frame_rng.integers(ce - len(k) - cs + 1))
+                        frame_rows.append((k, (shuffled_frame_pos - anchor) % 3, 'shuffle'))
+                    if not in_frame or (pos >= anchor and (pos - anchor) % 3 == 0):
+                        record(k, pos, 'reference' if name in ref else 'control')
+                        if background == 'shuffle':
+                            first = anchor if in_frame else cs
+                            step = 3 if in_frame else 1
+                            n_positions = (ce - len(k) - first) // step + 1
+                            shuffled = first + step * int(rng.integers(n_positions))
+                            record(k, shuffled, 'control')
+                    pos = seq.find(k, pos + 1, ce)
+            qc.append((name, 'used'))
+        occurrences = pd.DataFrame(rows, columns=['transcript', 'kmer', 'start', 'end', 'frame', 'group', 'domains'])
+        frame_data = pd.DataFrame(frame_rows, columns=['kmer', 'frame', 'group'])
+        frame_index = pd.MultiIndex.from_product([kmers, ['coding', 'shuffle', 'control'], range(3)], names=['kmer', 'group', 'frame'])
+        frame_counts = frame_data.groupby(['kmer', 'group', 'frame']).size().reindex(frame_index, fill_value=0).rename('count').reset_index()
+        frame_totals = frame_counts.groupby(['kmer', 'group'])['count'].transform('sum')
+        frame_counts['percent'] = 100 * frame_counts['count'] / frame_totals.replace(0, np.nan)
+        quality = pd.DataFrame(qc, columns=['transcript', 'status'])
+        if len(quality) and (quality.status != 'used').any():
+            warnings.warn("Some transcripts excluded; inspect result['qc'] for reasons", stacklevel=2)
+        if occurrences.empty:
+            raise ValueError('No eligible CDS occurrences. Check IDs, full-length FASTAs, GTF and frame filter. ' + str(quality.status.value_counts().to_dict()))
+        totals = Counter(zip(occurrences.kmer, occurrences.group))
+        hits = Counter()
+        for row in occurrences.itertuples(index=False):
+            hits.update(((row.kmer, row.group, domain) for domain in row.domains))
+        domains = sorted({domain for _, _, domain in hits})
+        if not domains:
+            raise ValueError('No same-strand UniProt overlaps; check assembly, coordinates and selected tracks')
+        stats = []
+        for k in kmers:
+            n1, n0 = (totals[k, 'reference'], totals[k, 'control'])
+            for domain in domains:
+                a, c = (hits[k, 'reference', domain], hits[k, 'control', domain])
+                b, d = (n1 - a, n0 - c)
+                testable = n1 > 0 and n0 > 0 and (0 < a + c < n1 + n0)
+                odds, p = fisher_exact([[a, b], [c, d]], alternative='two-sided') if testable else (np.nan, np.nan)
+                delta = 0.5 if 0 in (a, b, c, d) else 0.0
+                logor = np.log2((a + delta) * (d + delta) / ((b + delta) * (c + delta))) if testable else np.nan
+                stats.append((k, domain, a, b, c, d, odds, logor, p, testable))
+        table = pd.DataFrame(stats, columns=['kmer', 'domain', 'A', 'B', 'C', 'D', 'odds_ratio', 'log2_or', 'pvalue', 'testable'])
+        table['fdr'] = np.nan
+        groups = [table.index] if fdr_scope == 'global' else table.groupby('kmer').groups.values()
+        for idx in groups:
+            valid = table.loc[idx, 'pvalue'].dropna().index
+            if len(valid):
+                table.loc[valid, 'fdr'] = multipletests(table.loc[valid, 'pvalue'], method='fdr_bh')[1]
+        table['significant'] = table.fdr.le(alpha)
+        table['enriched'] = table.odds_ratio.gt(1)
+        table['significant_enrichment'] = table.significant & table.enriched
+        matrix = table.pivot(index='kmer', columns='domain', values='log2_or').reindex(kmers)
+        qmatrix = table.pivot(index='kmer', columns='domain', values='fdr').reindex(kmers)
+        figure = None
+        frame_figure = None
+        plotted = list(matrix.columns)
+        if output_dir is None:
+            base = Path(self.dir_out)
+            base.mkdir(parents=True, exist_ok=True)
+            destination = Path(tempfile.mkdtemp(prefix='K_CDS_', dir=base))
+        else:
+            destination = Path(output_dir)
+            destination.mkdir(parents=True, exist_ok=False)
+        frame_counts.to_csv(destination / 'frame_distribution.tsv', sep='\t', index=False)
+        table.to_csv(destination / 'statistics.tsv', sep='\t', index=False)
+        occurrences.to_csv(destination / 'occurrences.tsv', sep='\t', index=False)
+        quality.to_csv(destination / 'qc.tsv', sep='\t', index=False)
+        matrix.to_csv(destination / 'log2_or.tsv', sep='\t')
+        qmatrix.to_csv(destination / 'fdr.tsv', sep='\t')
+        import json
+        settings = dict(gtf_file=str(gtf_file), uniprot_dir=str(uniprot_dir), kmers=kmers, method=method, in_frame=in_frame, background=background, tracks=list(tracks), alpha=alpha, fdr_scope=fdr_scope, split_blocks=split_blocks, seed=seed, reference_fasta=str(reference_path), control_fasta=str(control_path), plotted_domains=plotted, species=key, plot=plot, max_domains=max_domains)
+        (destination / 'settings.json').write_text(json.dumps(settings, indent=2))
+        result = dict(statistics=table, occurrences=occurrences, qc=quality, log2_or=matrix, fdr=qmatrix, figure=figure, frame_distribution=frame_counts, frame_figure=frame_figure, output_dir=str(destination), settings=settings)
+        result['final_figures'] = {}
+        result['cluster_assignments'] = None
+        result['positional_enrichment'] = positional
+        settings.update(final_plots=final_plots, positional_source=positional_source,
+                        frame_threshold=frame_threshold, start_fraction=start_fraction,
+                        color_cap=color_cap, recompute_positional=recompute_positional)
+        if final_plots:
+            positional.to_csv(destination / 'positional_enrichment.tsv', sep='\t', index=False)
+            figures_dir = destination / 'figures'
+            figures_dir.mkdir()
+            r_code = r"""
+        #!/usr/bin/env Rscript
+        # Usage: Rscript heatmap_script.R K_CDS_DIRECTORY [OUTPUT_DIRECTORY]
+        # Dependencies: BiocManager::install('ComplexHeatmap'); install.packages('circlize')
+        suppressPackageStartupMessages({
+          library(ComplexHeatmap)
+          library(circlize)
+          library(grid)
+        })
+        args <- commandArgs(trailingOnly=TRUE)
+        if (!length(args)) stop('Usage: Rscript heatmap_script.R K_CDS_DIRECTORY [OUTPUT_DIRECTORY]')
+        input <- args[1]
+        out <- if (length(args)>1) args[2] else file.path(input, 'R_figures')
+        dir.create(out, recursive=TRUE, showWarnings=FALSE)
+        # Adjustable analysis/display parameters.
+        argument_number <- function(i, default) {
+          value <- if (length(args)>=i) suppressWarnings(as.numeric(args[i])) else default
+          if (length(value)!=1L || !is.finite(value)) stop('Invalid numeric argument ', i)
+          value
+        }
+        threshold <- argument_number(3, 0.5)     # Inclusive max frame fraction.
+        start_fraction <- argument_number(4, 0.10)
+        alpha <- argument_number(5, 0.05)
+        CAP <- argument_number(6, 2)
+        if (threshold<0 || threshold>1 || start_fraction<=0 || start_fraction>=1 || alpha<=0 || alpha>=1 || CAP<=0)
+          stop('Invalid threshold, start fraction, alpha or colour cap')
+        frame_colors <- c(First='lightgray', Second='white', Third='black')
+        col_fun <- colorRamp2(c(-CAP, -CAP/2, 0, CAP/2, CAP),
+                              c('#2166AC', '#92C5DE', '#FFFFFF', '#F4A582', '#B2182B'))
+        read_tsv <- function(name, required) {
+          path <- file.path(input, name)
+          if (!file.exists(path)) stop('Missing input: ', path)
+          x <- read.delim(path, check.names=FALSE, stringsAsFactors=FALSE)
+          if (!all(required %in% names(x))) stop(name, ': required columns: ', paste(required, collapse=', '))
+          x
+        }
+        frames <- read_tsv('frame_distribution.tsv', c('kmer','group','frame','count'))
+        stats <- read_tsv('statistics.tsv', c('kmer','domain','log2_or','fdr'))
+        pos <- read_tsv('positional_enrichment.tsv', c('kmer','bin','log2_or'))
+        if (anyDuplicated(stats[c('kmer','domain')])) stop('Duplicate kmer/domain pairs')
+        if (anyDuplicated(pos[c('kmer','bin')])) stop('Duplicate kmer/bin pairs')
+        if (anyDuplicated(frames[c('kmer','group','frame')])) stop('Duplicate frame rows')
+        if (anyNA(frames$count) || any(frames$count<0) || any(!frames$frame %in% 0:2)) stop('Invalid frame counts or frame labels')
+        kmers <- unique(stats$kmer)
+        if (length(kmers)<2) stop('At least two k-mers are required for two positional clusters')
+        if (!all(kmers %in% pos$kmer)) stop('Positional data missing for some k-mers')
+        bins <- unique(pos$bin[grepl('^CDS_[0-9]+$', pos$bin)])
+        bins <- bins[order(as.integer(sub('CDS_', '', bins)))]
+        if (length(bins)<2) stop('Need at least two CDS bins named CDS_0, CDS_1, ...')
+        make_matrix <- function(d, rows, cols, column, column_id) {
+          m <- matrix(NA_real_, length(rows), length(cols), dimnames=list(rows,cols))
+          ri <- match(d$kmer, rows); ci <- match(d[[column_id]], cols)
+          ok <- !is.na(ri) & !is.na(ci)
+          m[cbind(ri[ok],ci[ok])] <- as.numeric(d[[column]][ok])
+          m
+        }
+        p <- make_matrix(pos, kmers, bins, 'log2_or', 'bin')
+        # Missing estimates must not silently become neutral enrichment for clustering.
+        if (any(!is.finite(p))) stop('CDS positional matrix contains missing/nonfinite estimates. Supply complete, unmasked log2_or values; do not use the pooled or FDR-masked matrix.')
+        # Ward groups are computed from capped, row-centred positional profiles.
+        # The displayed heatmap retains capped enrichment values, without centring.
+        p_cap <- pmin(pmax(p, -CAP), CAP)
+        ns <- max(1L, min(ncol(p)-1L, ceiling(ncol(p)*start_fraction)))
+        contrast_raw <- rowMeans(p[,seq_len(ns),drop=FALSE]) - rowMeans(p[,-seq_len(ns),drop=FALSE])
+        contrast <- rowMeans(p_cap[,seq_len(ns),drop=FALSE]) - rowMeans(p_cap[,-seq_len(ns),drop=FALSE])
+        profile <- p_cap - rowMeans(p_cap)
+        hc <- hclust(dist(profile, method='euclidean'), method='ward.D2')
+        cl <- cutree(hc, k=2)
+        start_cluster <- as.integer(names(which.max(tapply(contrast, cl, mean))))
+        group <- ifelse(cl == start_cluster, 'CDS start', 'CDS body')
+        frame_matrix <- function(g) {
+          d <- frames[frames$group==g,,drop=FALSE]
+          m <- make_matrix(d, kmers, as.character(0:2), 'count', 'frame')
+          if (anyNA(m)) stop('Missing frame rows for group ', g, '; include all three frames, even zero counts')
+          total <- rowSums(m)
+          m <- m / ifelse(total>0, total, NA_real_)
+          colnames(m) <- c('First','Second','Third')
+          m
+        }
+        cds <- frame_matrix('coding'); shuffle <- frame_matrix('shuffle')
+        score <- apply(cds, 1, function(x) if (all(is.na(x))) NA_real_ else max(x))
+        passes <- !is.na(score) & score >= threshold
+        winner <- apply(cds, 1, function(x) if (all(is.na(x))) NA_character_ else paste(colnames(cds)[which(x==max(x))],collapse='/'))
+        # Shared row order: CDS start first, CDS body second; decreasing In Frame Index.
+        # All row-dependent vectors and matrices must follow exactly the same order.
+        in_frame_index <- 100 * score
+        ord <- order(factor(group, levels=c('CDS start','CDS body')), -in_frame_index, kmers)
+        kmers <- kmers[ord]
+        rna <- gsub('T', 'U', kmers)
+        p <- p_cap[ord,,drop=FALSE]
+        cds <- cds[ord,,drop=FALSE]; shuffle <- shuffle[ord,,drop=FALSE]
+        score <- score[ord]; in_frame_index <- in_frame_index[ord]
+        passes <- passes[ord]; winner <- winner[ord]
+        contrast <- contrast[ord]; contrast_raw <- contrast_raw[ord]
+        split <- factor(group[ord], levels=c('CDS start','CDS body'))
+        message('Ward on capped, row-centred profiles: ', sum(split == 'CDS body'),
+                ' CDS body; ', sum(split == 'CDS start'), ' CDS start')
+
+        domains <- unique(stats$domain)
+        domain_limit <- if (args[7]=='all') Inf else as.integer(args[7])
+        if (length(domains) > domain_limit) {
+          best_fdr <- vapply(domains, function(domain) {
+            values <- stats$fdr[stats$domain==domain]
+            if (all(is.na(values))) Inf else min(values, na.rm=TRUE)
+          }, numeric(1))
+          domains <- domains[order(best_fdr, seq_along(domains))][seq_len(domain_limit)]
+        }
+        d <- make_matrix(stats, kmers, domains, 'log2_or', 'domain')
+        q <- make_matrix(stats, kmers, domains, 'fdr', 'domain')
+        d[!is.finite(d)] <- NA_real_
+        d[!passes,] <- NA_real_
+        write.table(data.frame(kmer=kmers, cluster=as.character(split), score=score,
+                              passes=passes, preferred_frame=winner,
+                              start_minus_body=contrast,
+                              start_minus_body_raw=contrast_raw,
+                              in_frame_index=in_frame_index, kmer_rna=rna),
+                    file.path(out,'cluster_assignments.tsv'), sep='\t', quote=FALSE, row.names=FALSE)
+        # Shared ordering is explicit: neither heatmap can independently reorder rows.
+        base_hm <- function(mat, name, colors=col_fun,
+                            row_title_gp=gpar(fontsize=8,fontface='bold'),
+                            column_names_gp=gpar(fontsize=8), ...) Heatmap(mat, name=name, col=colors,
+          cluster_rows=FALSE, cluster_columns=FALSE, cluster_row_slices=FALSE,
+          row_order=seq_len(nrow(mat)), row_split=split, row_gap=unit(2,'mm'),
+          row_title_rot=90, row_title_gp=row_title_gp,
+          row_names_gp=gpar(fontsize=8), column_names_gp=column_names_gp,
+          column_names_rot=90, border=TRUE, ...)
+        flag <- function() rowAnnotation(
+          `Frame preference`=anno_simple(ifelse(passes,'Pass','Fail'),
+            col=c(Pass='black',Fail='white'), border=TRUE, simple_anno_size=unit(3,'mm')),
+          annotation_name_rot=90)
+        # Compact main panel matching the supplied reference; scientific calculations above are unchanged.
+        cell_mm <- 4.2
+        main_row_mm <- 2.0
+        main_gap_mm <- 2 * (length(unique(split)) - 1L)
+        main_col_fun <- colorRamp2(c(-CAP, -CAP/2, 0, CAP/2, CAP),
+                                   c('#9B63E6', '#C7A2F7', '#FFFFFF', '#FFAB94', '#EF6548'))
+        main_ns_color <- '#EEEEEE'
+        main_not_frame_color <- '#D5D5D5'
+        main_left <- rowAnnotation(
+          `k-mer`=anno_text(rna, just='right', location=unit(1,'npc'),
+            gp=gpar(fontsize=5.1), width=max_text_width(rna, gp=gpar(fontsize=5.1)) + unit(1,'mm')),
+          `In Frame Index`=anno_lines(in_frame_index, ylim=c(30,100), extend=0,
+            add_points=TRUE, pt_gp=gpar(col='black',fill='black'),
+            size=unit(0.25,'mm'), pch=16, gp=gpar(col='black',lwd=0.45),
+            border=TRUE, width=unit(17,'mm'),
+            axis_param=list(at=c(50,100),labels=c('50','100'), side='bottom',
+                            labels_rot=90, gp=gpar(fontsize=5))),
+          `Frame strip`=anno_simple(ifelse(passes,'Pass','Fail'),
+            col=c(Pass='black',Fail='white'), border=TRUE, simple_anno_size=unit(1.8,'mm')),
+          gap=unit(c(1.0,0.8),'mm'), show_legend=FALSE,
+          show_annotation_name=c(`k-mer`=FALSE,`In Frame Index`=TRUE,`Frame strip`=FALSE),
+          annotation_name_side='top', annotation_name_rot=0,
+          annotation_name_gp=gpar(fontsize=6))
+        main <- base_hm(d, 'log2 OR', colors=main_col_fun,
+          na_col=main_not_frame_color, column_title=NULL, show_row_names=FALSE,
+          row_title_gp=gpar(fontsize=7,fontface='plain'),
+          column_names_gp=gpar(fontsize=6),
+          column_labels=sub('^[^:]+: *','',colnames(d)),
+          left_annotation=main_left,
+          width=unit(ncol(d)*cell_mm,'mm'),
+          height=unit(nrow(d)*main_row_mm + main_gap_mm,'mm'),
+          heatmap_legend_param=list(title='log2 OR',at=c(-CAP,0,CAP),
+            legend_height=unit(17,'mm'),grid_width=unit(2,'mm'),
+            title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5)),
+          rect_gp=gpar(col='#D8D8D8',lwd=0.25),
+          cell_fun=function(j,i,x,y,w,h,fill) {
+            if (!passes[i]) {
+              grid.rect(x,y,w,h,gp=gpar(fill=main_not_frame_color,col='#D8D8D8',lwd=0.25))
+            } else if (!is.finite(d[i,j]) || !is.finite(q[i,j])) {
+              grid.rect(x,y,w,h,gp=gpar(fill=main_ns_color,col='#D8D8D8',lwd=0.25))
+              grid.text('NA',x,y,gp=gpar(fontsize=3.8,col='#777777'))
+            } else if (q[i,j]>alpha) {
+              grid.rect(x,y,w,h,gp=gpar(fill=main_ns_color,col='#D8D8D8',lwd=0.25))
+              grid.text('NS',x,y,gp=gpar(fontsize=3.8,col='#777777'))
+            }
+          })
+        main_leg_cell <- Legend(title='Cell',
+          labels=c(paste0('FDR <= ',format(alpha,trim=TRUE)), 'NS: not significant', 'not in frame'),
+          legend_gp=gpar(fill=c('#FFAB94',main_ns_color,main_not_frame_color),col=NA),
+          grid_height=unit(2,'mm'), grid_width=unit(2,'mm'),
+          title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5))
+        main_leg_frame <- Legend(title='Frame strip',labels=c('in frame','not in frame'),
+          legend_gp=gpar(fill=c('black','white'),col='black',lwd=0.4),
+          grid_height=unit(2,'mm'),grid_width=unit(2,'mm'),
+          title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5))
+        main_leg_threshold <- Legend(title='Dashed line',type='lines',background='white',
+          labels=paste0('threshold ',format(100*threshold,trim=TRUE),'%'),
+          legend_gp=gpar(col='#999999',lty=2,lwd=0.7),
+          title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5))
+        # Supplementary: aligned positional profiles, frame proportions and frame index.
+        # Means use the same capped, uncentred values displayed in the positional heatmap.
+        supp_row_mm <- 2.0
+        cluster_colors <- c(`CDS body`='#69A99B', `CDS start`='#E39A65')
+        cluster_means <- sapply(names(cluster_colors), function(g) colMeans(p[split==g,,drop=FALSE]))
+        write.table(data.frame(bin=colnames(p), cluster_means, check.names=FALSE),
+          file.path(out,'cluster_mean_profiles.tsv'), sep='\t', quote=FALSE, row.names=FALSE)
+        profile_limits <- range(c(0, cluster_means), finite=TRUE)
+        if (diff(profile_limits)==0) profile_limits <- profile_limits + c(-0.1,0.1)
+        profile_ticks <- pretty(profile_limits, n=4)
+        profile_limits <- range(profile_limits, profile_ticks)
+        supp_top <- HeatmapAnnotation(
+          `Mean log2 OR`=anno_lines(cluster_means, add_points=FALSE,
+            gp=gpar(col=unname(cluster_colors),lwd=0.65),
+            ylim=profile_limits, extend=0, border=TRUE, height=unit(15,'mm'),
+            axis_param=list(at=profile_ticks,labels=format(profile_ticks,trim=TRUE),
+                            side='left',gp=gpar(fontsize=5))),
+          annotation_name_side='left',annotation_name_rot=90,
+          annotation_name_gp=gpar(fontsize=5.5))
+        bar <- function(m) {
+          m[is.na(m)] <- 0
+          anno_barplot(m*100, beside=FALSE,
+            gp=gpar(fill=frame_colors,col='grey50',lwd=0.3),
+            border=TRUE,bar_width=0.8,ylim=c(0,100),extend=0,width=unit(19,'mm'),
+            axis_param=list(at=c(0,50,100),labels=c('0','50','100'),
+                            side='top',labels_rot=0,gp=gpar(fontsize=5)))
+        }
+        anno <- rowAnnotation(`CDS (%)`=bar(cds),`Shuffle (%)`=bar(shuffle),
+          `In Frame Index`=anno_lines(in_frame_index,ylim=c(30,100),extend=0,
+            add_points=TRUE,pt_gp=gpar(col='black',fill='black'),
+            size=unit(0.25,'mm'),pch=16,gp=gpar(col='black',lwd=0.45),
+            border=TRUE,width=unit(19,'mm'),
+            axis_param=list(at=c(40,60,80,100),labels=c('40','60','80','100'),
+                            side='top',labels_rot=0,gp=gpar(fontsize=5))),
+          annotation_name_rot=0,annotation_name_side='top',
+          annotation_name_gp=gpar(fontsize=6),gap=unit(3,'mm'))
+        supp_left <- rowAnnotation(
+          `k-mer`=anno_text(rna,just='right',location=unit(1,'npc'),
+            gp=gpar(fontsize=5.1),
+            width=max_text_width(rna,gp=gpar(fontsize=5.1)) + unit(1,'mm')),
+          show_annotation_name=FALSE)
+        supp <- base_hm(p,'Position log2 OR',colors=main_col_fun,
+          column_title="CDS positional enrichment (5' -> 3')",
+          column_title_gp=gpar(fontsize=7,fontface='plain'),
+          show_column_names=FALSE,show_row_names=FALSE,
+          row_title_gp=gpar(fontsize=7,fontface='plain'),
+          top_annotation=supp_top,left_annotation=supp_left,width=unit(62,'mm'),
+          height=unit(nrow(p)*supp_row_mm + main_gap_mm,'mm'),
+          heatmap_legend_param=list(title='Position log2 OR',at=c(-CAP,-CAP/2,0,CAP/2,CAP),
+            legend_height=unit(23,'mm'),grid_width=unit(2,'mm'),
+            title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5)),
+          rect_gp=gpar(col=NA)) + anno
+        # Explicit labels distinguish absent frame hits from an observed zero fraction.
+        missing_labels <- ifelse(is.na(score),'No CDS hits',
+                                 ifelse(is.na(shuffle[,1]),'No shuffle hits',''))
+        if (any(nzchar(missing_labels))) {
+          supp <- supp + rowAnnotation(
+            ` `=anno_text(missing_labels,gp=gpar(fontsize=5)),show_annotation_name=FALSE)
+        }
+        leg_cluster <- Legend(title='Cluster mean',labels=names(cluster_colors),type='lines',
+          background='white',legend_gp=gpar(col=unname(cluster_colors),lwd=0.65),
+          grid_height=unit(2,'mm'),grid_width=unit(4,'mm'),
+          title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5))
+        leg_frame <- Legend(title='Codon start position',labels=c('First','Second','Third'),
+          legend_gp=gpar(fill=frame_colors,col='grey45',lwd=0.3),
+          grid_height=unit(2,'mm'),grid_width=unit(2,'mm'),
+          title_gp=gpar(fontsize=6),labels_gp=gpar(fontsize=5))
+        height <- max(6, length(kmers)*0.17+2.8)
+        save_plot <- function(obj, name, width, legends, plot_height=height) {
+          for (ext in c('pdf','png','svg')) {
+            path <- file.path(out,paste0(name,'.',ext))
+            if (ext=='pdf') pdf(path,width=width,height=plot_height,onefile=FALSE)
+            else if (ext=='svg') svg(path,width=width,height=plot_height,family='Arial')
+            else png(path,width=width,height=plot_height,units='in',res=300,family='Arial')
+            tryCatch({
+              draw(obj, merge_legends=TRUE, heatmap_legend_side='right',
+                   annotation_legend_side='right', align_heatmap_legend=if (name=='main_domains') 'heatmap_top' else 'heatmap_center',
+                   align_annotation_legend=if (name=='main_domains') 'heatmap_top' else 'heatmap_center', annotation_legend_list=legends,
+                   padding=unit(c(2,2,2,2),'mm'))
+              if (name=='main_domains') {
+                # anno_lines uses exactly [30,100] because extend=0; draw one threshold per slice.
+                for (slice in seq_along(levels(droplevels(split)))) {
+                  decorate_annotation('In Frame Index', {
+                    x <- (100*threshold-30)/70
+                    if (x>=0 && x<=1) grid.segments(x0=unit(x,'npc'),x1=unit(x,'npc'),
+                      y0=unit(0,'npc'),y1=unit(1,'npc'),gp=gpar(col='#999999',lty=2,lwd=0.6))
+                  }, slice=slice)
+                }
+              }
+            }, finally=dev.off())
+          }
+        }
+        save_plot(main,'main_domains',max(3.6, (ncol(d)*cell_mm + 75)/25.4),
+                  list(main_leg_cell,main_leg_frame,main_leg_threshold),
+                  plot_height=max(4.5,(nrow(d)*main_row_mm + main_gap_mm + 37)/25.4))
+        save_plot(supp,'supplement_positions_frames',7.4,list(leg_cluster,leg_frame),
+                  plot_height=max(4.5,(nrow(p)*supp_row_mm + main_gap_mm + 40)/25.4))
+        writeLines(c(capture.output(sessionInfo()),
+          paste('Threshold (inclusive):',threshold), paste('Start fraction:',start_fraction),
+          paste('Colour scale and clustering cap: +/-',CAP),
+          'Classification: Euclidean distance, Ward.D2, capped CDS log2 OR centred on each row mean; cutree(k=2).',
+          'The cluster with the higher mean first-10%-minus-rest capped contrast is CDS start.',
+          'Within-group ordering: decreasing In Frame Index (100 * maximum CDS frame fraction), then k-mer.',
+          'Positional heatmap shows capped, uncentred log2 OR; domain values use the same colour scale.',
+          'cluster_assignments.tsv: start_minus_body is capped; start_minus_body_raw is uncapped.',
+          'Frame colours: First=lightgray, Second=white, Third=black; displayed k-mers use U.',
+          'Main panel: CDS start above CDS body; RNA row labels, In Frame Index, threshold line, frame strip and domain heatmap.',
+          'Main colors: purple-white-salmon; NS cells light grey; below-frame cells grey; stars and N.C. labels removed from main.',
+          'Main labels: In Frame Index is 100 * maximum CDS frame fraction, not exclusively the first reading frame.',
+          'Main row height: 2 mm; compact legends aligned at the top; short domain column labels.',
+          'Supplement: capped uncentred positional heatmap; mean profiles of both clusters above; CDS and shuffle frame fractions and In Frame Index at right.',
+          'Supplement: 2 mm rows; purple-white-salmon colours; cluster_mean_profiles.tsv contains the displayed mean profiles.',
+          'Frame-threshold failure is not proof of noncoding.'),
+          file.path(out,'plot_settings.txt'))
+        message('Saved figures and assignments in ', normalizePath(out))
+        """
+            script_path = destination / 'heatmap_script.R'
+            script_path.write_text(textwrap.dedent(r_code).lstrip(), encoding='utf-8')
+            command = [r_executable, '--vanilla', str(script_path.resolve()),
+                       str(destination.resolve()), str(figures_dir.resolve()),
+                       str(frame_threshold), str(start_fraction), str(alpha), str(color_cap),
+                       "all" if max_domains is None else str(max_domains)]
+            completed = subprocess.run(command, capture_output=True, text=True)
+            (destination / 'heatmap_R.log').write_text(completed.stdout + completed.stderr, encoding='utf-8')
+            if completed.returncode:
+                self.k_cds = result
+                self.domain_enrichment = result
+                raise RuntimeError('Final R panels failed; existing K-CDS outputs are saved in ' + str(destination) + '\n' + completed.stderr)
+            names = ['main_domains', 'supplement_positions_frames']
+            for name in names:
+                paths = {ext: str(figures_dir / (name + '.' + ext)) for ext in ['pdf', 'png', 'svg']}
+                if not all(Path(path).is_file() for path in paths.values()):
+                    raise RuntimeError('R did not generate all final figure files: ' + name)
+                result['final_figures'][name] = paths
+            result['cluster_assignments'] = pd.read_csv(figures_dir / 'cluster_assignments.tsv', sep='\t')
+            result['figures_dir'] = str(figures_dir)
+            print(result['cluster_assignments']['cluster'].value_counts().to_string())
+            if show_final:
+                try:
+                    from IPython import get_ipython
+                    from IPython.display import display, Image
+                    if get_ipython() is not None:
+                        for name in names:
+                            display(Image(filename=result['final_figures'][name]['png']))
+                except ImportError:
+                    pass
+        (destination / 'settings.json').write_text(json.dumps(settings, indent=2), encoding='utf-8')
+        self.k_cds = result
+        self.domain_enrichment = result
+        return result
+
+    def cooccurrence(self, kmers=None, *, pairs=None, species='input',
+                     fasta_file=None, n_resamples=1000, n_background=1000000000,
+                     window_width=20, step=1, min_distance=8,
+                     min_enrichment=2.0, pvalue_threshold=0.05,
+                     min_support_fraction=0.10, fdr_threshold=None,
+                     fdr_method='fdr_bh', masking=False,
+                     tantan_executable=None, tantan_options=None,
+                     seed=42, output_dir=None, plot=True, verbose=True,
+                     fit_tail=True, threads=1, keep_windows=True, resume_dir=None, jobs=1):
+        """WORK IN PROGRESS: enrichment of nonoverlapping motif spacings.
+
+        jobs controls concurrent pair processes (Linux fork); threads controls
+        simulation threads PER process, so jobs*threads is the requested maximum.
+        Pair computations and FDR table compression both use process workers.
+        Completed, hash-verified branches and pairs are reused on resume.
+
+        v1.2 retains the empirical scan p-value unchanged and additionally fits
+        a data-parameterized generalized Pareto upper tail to the global maxima.
+        Inspect tail_fit.json diagnostics; fitted p-values are exploratory.
+        Both empirical and fitted pair FDR are reported, with explicit empirical
+        fallback for unavailable fits; only empirical p/FDR gates selection.
+        threads parallelizes independent batches with unchanged per-batch seeds.
+        keep_windows=False stores compressed per-pair tables without pooling
+        all windows into RAM. resume_dir reuses hash-verified completed pairs.
+
+
+        All unordered distinct motif pairs use every Cartesian forward-strand
+        occurrence distance within each reference transcript. Distances >=
+        min_distance (default 8, i.e. strictly >7 nt) enter sliding 20-nt windows.
+        The expected distribution is computed exactly from valid coordinate-pair
+        geometry, weighted by nA*nB BEFORE the distance filter, then conditioned
+        globally on the same distance filter. n_background is only a multinomial
+        sample of this distribution for display, not the inferential sample size.
+
+        Each MC replicate jointly samples nA+nB distinct valid starts within each
+        transcript, assigns A/B labels, rebuilds all Cartesian distances and
+        normalizes AFTER filtering. Its maximum excess across ALL windows
+        calibrates each observed window's scan-adjusted one-sided p-value.
+        This is a conditional uniform-site model; local repeat clustering is
+        NOT preserved. Real motif coordinates are allowed in randomizations.
+
+        Apply enrichment >= min_enrichment, pvalue_scan < pvalue_threshold and
+        support >= ceil(min_support_fraction * all_reference_transcripts) to
+        EACH original window, THEN merge overlapping passing windows. A TX
+        counts once per window/merged interval. Report the strongest constituent
+        window p-value explicitly; no new region-level test is computed.
+        fdr_threshold=None disables correction between pairs. Otherwise compute
+        pair_FDR by fdr_method ('fdr_bh' or conservative 'fdr_by'), separately
+        within each masking branch, using the global max-scan p-value of EVERY
+        unordered pair of the declared motif set, before effect/support filtering.
+        An incomplete pairs subset is rejected; at least two pairs are required.
+        Untestable pairs count as p=1 internally, but retain NaN in exported FDR.
+        pair_FDR is a PAIR-level gate, not an interval-level FDR. All local
+        enrichment/pvalue/support criteria remain required. No FDR is inferred
+        across the masked and unmasked branches.
+
+        masking=True runs paired unmasked/masked branches on the SAME input
+        motifs using tantan hard masking (-x N, standard DNA parameters unless
+        explicitly changed). All masked windows are excluded from observed hits
+        and random valid coordinates; lengths/IDs/denominator are unchanged.
+        Temporary masked FASTA is removed. Inputs and other KEA methods are
+        untouched. Return a dict of tables, plots, metadata and output directory.
+        """
+        from pathlib import Path
+        import hashlib, json, math, tempfile, subprocess, shutil, time
+        from itertools import combinations
+        import numpy as np
+        import pandas as pd
+        from Bio import SeqIO
+        from scipy.signal import correlate
+        from numba import njit
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        VERSION = '1.3.0-spacing-jobs-wip'
+        if not isinstance(masking, (bool, np.bool_)):
+            raise TypeError('masking must be True or False')
+        if not isinstance(fit_tail, (bool, np.bool_)) or not isinstance(keep_windows, (bool, np.bool_)):
+            raise TypeError('fit_tail and keep_windows must be boolean')
+        if isinstance(threads,bool) or int(threads)!=threads or threads<1:
+            raise ValueError('threads must be a positive integer')
+        threads=int(threads)
+        if isinstance(jobs,(bool,np.bool_)) or int(jobs)!=jobs or jobs<1:
+            raise ValueError('jobs must be a positive integer')
+        jobs=int(jobs)
+        if jobs>1:
+            import multiprocessing as multiprocessing_local
+            if 'fork' not in multiprocessing_local.get_all_start_methods():
+                raise ValueError('jobs>1 currently requires Linux/POSIX fork; use jobs=1 on this platform')
+        for name, value in [('n_resamples', n_resamples), ('n_background', n_background),
+                            ('window_width', window_width), ('step', step), ('min_distance', min_distance)]:
+            if isinstance(value, bool) or int(value) != value or value <= 0:
+                raise ValueError(name + ' must be a positive integer')
+        n_resamples, n_background = int(n_resamples), int(n_background)
+        window_width, step, min_distance = int(window_width), int(step), int(min_distance)
+        if not (0 < pvalue_threshold < 1 and 0 <= min_support_fraction <= 1 and min_enrichment >= 1):
+            raise ValueError('Invalid p-value, support or enrichment threshold')
+        if fdr_threshold is not None and not (0 < fdr_threshold < 1):
+            raise ValueError('fdr_threshold must be None or a number strictly between 0 and 1')
+        if fdr_method not in {'fdr_bh','fdr_by'}:
+            raise ValueError("fdr_method must be 'fdr_bh' or 'fdr_by'")
+        if not isinstance(seed, (int, np.integer)) or seed < 0:
+            raise ValueError('seed must be a nonnegative integer')
+        source = Path(fasta_file or self.reference_fasta).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+        if kmers is None:
+            results = (getattr(self, 'KEA_results', None) or {}).get(species, {})
+            methods = ['delta_median', 'stat_log2fc']
+            if any(m not in results for m in methods):
+                raise ValueError('Pass the KEA-enriched kmers explicitly, or load delta_median and stat_log2fc results first.')
+            kmers = set.intersection(*(set(results[m]['enriched']) for m in methods))
+        words = sorted({str(w).upper().replace('U', 'T') for w in kmers})
+        if len(words) < 2 or any(not w or set(w) - set('ACGT') for w in words):
+            raise ValueError('At least two distinct ACGT k-mers are required')
+        lengths = {len(w) for w in words}
+        if len(lengths) != 1:
+            raise ValueError('All k-mers must have the same length')
+        k = lengths.pop()
+        if min_distance < k:
+            raise ValueError('min_distance must be >= k to exclude overlapping motif windows')
+        selected_pairs = list(combinations(words, 2)) if pairs is None else sorted({tuple(sorted(str(w).upper().replace('U','T') for w in pair)) for pair in pairs})
+        if not selected_pairs or any(len(pair) != 2 or pair[0] == pair[1] or not set(pair).issubset(words) for pair in selected_pairs):
+            raise ValueError('pairs must contain distinct unordered pairs from kmers')
+        declared_pair_family = list(combinations(words,2))
+        if fdr_threshold is not None:
+            if len(declared_pair_family) < 2:
+                raise ValueError('FDR requires multiple declared motif pairs; use fdr_threshold=None for a single-pair toy')
+            if set(selected_pairs) != set(declared_pair_family):
+                raise ValueError('FDR requires ALL unordered pairs of the declared kmers; remove the pairs subset or disable FDR')
+        records = list(SeqIO.parse(str(source), 'fasta'))
+        ids = [r.id for r in records]
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError('Reference FASTA must have unique IDs and at least one transcript')
+        sequences = [str(r.seq).upper().replace('U','T') for r in records]
+        if any(set(s)-set('ACGTNRYWSKMBDHVX-') for s in sequences):
+            raise ValueError('Unsupported non-DNA symbols in reference')
+        n_tx = len(ids)
+        support_required = int(math.ceil(min_support_fraction * n_tx))
+        maxd = max(map(len, sequences))-k
+        if maxd-min_distance+1 < window_width:
+            raise ValueError('Reference too short for the requested distance windows')
+        starts = np.arange(min_distance, maxd-window_width+2, step, dtype=np.int64)
+        distance = np.arange(maxd+1, dtype=np.int64)
+        base = Path(output_dir).resolve() if output_dir is not None else Path(self.dir_out).resolve()/'Cooccurrence'/species/'spacing_v1'
+        base.mkdir(parents=True, exist_ok=True)
+        if resume_dir is None:
+            destination = Path(tempfile.mkdtemp(prefix='run_', dir=str(base)))
+        else:
+            destination = Path(resume_dir).resolve()
+            if not destination.is_dir() or not destination.is_relative_to(base):
+                raise ValueError('resume_dir must be an existing run within output_dir')
+        started = time.time()
+        settings = dict(version=VERSION, state='running', reference_fasta=str(source), reference_sha256=source_sha,
+                        kmers=words, pairs=[list(p) for p in selected_pairs], n_transcripts=n_tx, k=k,
+                        n_resamples=n_resamples, n_background=n_background, window_width=window_width, step=step,
+                        min_distance=min_distance, min_enrichment=float(min_enrichment), pvalue_threshold=float(pvalue_threshold),
+                        min_support_fraction=float(min_support_fraction), required_support_transcripts=support_required,
+                        masking=bool(masking), seed=int(seed), fdr_computed=False,
+                        fit_tail=bool(fit_tail), threads=threads, keep_windows=bool(keep_windows), jobs=jobs,
+                        primary_pvalue='empirical scan-adjusted pvalue_scan; fitting never changes primary selection',
+                        fitted_pvalue='GPD upper tail of the SAME 1000 global maxima; empirical body; diagnostic failures or finite-endpoint extrapolation are NaN',
+                        fitted_fdr='secondary pair_FDR_fitted uses fitted pair p-values where available and empirical fallback otherwise; never gates primary selection',
+                        fdr_threshold=None if fdr_threshold is None else float(fdr_threshold),
+                        fdr_method=fdr_method, fdr_level='pair; separately within each masking branch',
+                        fdr_pair_family_size=len(declared_pair_family),
+                        fdr_family='all unordered pairs of declared input motifs, before enrichment/support filtering; untestable use p=1 internally and exported NaN',
+                        weighting='nA*nB per TX before distance filtering; normalize globally after filtering',
+                        null='joint uniform distinct valid starts within each TX; counts preserved; local clustering not preserved; real A/B coordinates allowed',
+                        pvalue='one-sided excess vs fixed exact expected; maximum across ALL windows in each complete MC replicate; plus-one correction',
+                        merge='overlapping passing windows merged only AFTER all three per-window filters; bookended windows remain separate',
+                        region_pvalue='best_window_pvalue_scan is a constituent-window p-value, not a test of the merged interval',
+                        masked_fasta_policy='temporary hard-masked FASTA only; original input never overwritten')
+        def write_json(path, value):
+            temporary=path.with_name(path.name+'.writing')
+            temporary.write_text(json.dumps(value,indent=2),encoding='utf-8')
+            temporary.replace(path)
+        import inspect, sys, scipy, numba
+        settings['software_versions'] = dict(python=sys.version.split()[0], numpy=np.__version__, pandas=pd.__version__, scipy=scipy.__version__, numba=numba.__version__)
+        settings['method_source_sha256'] = hashlib.sha256(inspect.getsource(type(self).cooccurrence).encode()).hexdigest()
+        if resume_dir is not None:
+            previous=json.loads((destination/'settings.json').read_text())
+            ignored={'state','threads','jobs','software_versions','fdr_computed','version','method_source_sha256'}
+            # v1.2 hash pinned after AST/RNG equivalence tests.
+            compatible_previous={'2d0041c6f8b33f20f2653bd58528415ca818226b26ceba204540d9ebeb0dc84e'}
+            if previous.get('method_source_sha256') not in compatible_previous|{settings['method_source_sha256']}:
+                raise ValueError('Resume method source is not a verified compatible version')
+            comparable=[key for key in settings if key not in ignored]
+            if any(previous.get(key)!=settings[key] for key in comparable):
+                raise ValueError('Resume inputs, parameters or method source differ; existing run preserved')
+            settings['resume_history']=previous.get('resume_history',[])+[
+                dict(previous_version=previous.get('version'),previous_method_source_sha256=previous.get('method_source_sha256'),
+                     current_version=VERSION,jobs=jobs,threads=threads,resumed_unix=time.time())]
+        write_json(destination/'settings.json', settings)
+        window_columns = ['kmer_a','kmer_b','start_nt','end_nt','observed_count','observed_pct','expected_pct',
+                          'excess_percentage_points','enrichment','support_transcripts','support_fraction',
+                          'pvalue_scan','pvalue_scan_fitted','passes_enrichment','passes_pvalue','passes_support','selected']
+        region_columns = ['region','kmer_a','kmer_b','start_nt','end_nt','width_nt','n_windows',
+                          'observed_pct','expected_pct','enrichment','support_transcripts','support_fraction',
+                          'best_window_start_nt','best_window_end_nt','best_window_pvalue_scan','best_window_pvalue_scan_fitted']
+        pair_rows = []
+        branch_results = {}
+
+        def fit_maximum_tail(maxima, scores):
+            """Semiparametric upper-tail fit; empirical body, no zero extrapolations.
+
+            GPD shape/scale are fitted from the data. Three tail thresholds
+            are screened; choose the lowest acceptable threshold (most data).
+            The KS discrepancy is a diagnostic, NOT a calibrated GOF p-value.
+            Failure/finite-endpoint extrapolation yields NaN, never p=0.
+            """
+            from scipy.stats import genpareto
+            import warnings
+            scores = np.asarray(scores, dtype=float)
+            fitted = np.full(scores.shape, np.nan)
+            meta = dict(status='disabled' if not fit_tail else 'insufficient_simulations',
+                        family='generalized Pareto upper tail; empirical body',
+                        threshold_selection='lowest quantile passing descriptive KS screen, with >=50 exceedances and >=20 distinct values',
+                        ks_screen='D <= 1.36/sqrt(n_tail); heuristic diagnostic only, NOT a GOF p-value',
+                        candidates=[], n_simulations=len(maxima))
+            if not fit_tail or len(maxima) < 250:
+                return fitted, meta
+            empirical = (1+len(maxima)-np.searchsorted(np.sort(maxima),scores-1e-14,side='left'))/(len(maxima)+1)
+            chosen = None
+            for quantile in (0.80,0.90,0.95):
+                threshold = float(np.quantile(maxima,quantile))
+                tail = np.asarray(maxima[maxima>threshold]-threshold,dtype=float)
+                candidate = dict(quantile=quantile,threshold=threshold,n_tail=len(tail),accepted=False)
+                meta['candidates'].append(candidate)
+                if len(tail)<50 or len(np.unique(tail))<20:
+                    candidate['reason']='too few exceedances or distinct values'
+                    continue
+                unit = float(tail.max())
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('error',RuntimeWarning)
+                        shape,_,scale = genpareto.fit(tail/unit,floc=0)
+                    if not np.isfinite([shape,scale]).all() or scale<=0:
+                        raise ValueError('nonfinite parameters')
+                    cdf = genpareto.cdf(np.sort(tail)/unit,shape,loc=0,scale=scale)
+                    ranks = np.arange(1,len(tail)+1)/len(tail)
+                    discrepancy = float(max(np.max(ranks-cdf),np.max(cdf-(ranks-1/len(tail)))))
+                    limit = float(1.36/np.sqrt(len(tail)))
+                    accepted = bool(np.isfinite(discrepancy) and discrepancy<=limit)
+                    candidate.update(shape=float(shape),scale=float(scale*unit),
+                                     ks_distance=discrepancy,ks_screen_limit=limit,accepted=accepted)
+                    if accepted and chosen is None:
+                        chosen=(threshold,len(tail),float(shape),float(scale*unit),quantile,discrepancy)
+                except Exception as error:
+                    candidate['reason']=f'{type(error).__name__}: {error}'
+            if chosen is None:
+                meta['status']='no_acceptable_tail_fit'
+                return fitted,meta
+            threshold,n_tail,shape,scale,quantile,discrepancy=chosen
+            fitted[:]=empirical
+            use_tail=scores>threshold
+            logp=np.log(n_tail/len(maxima))+genpareto.logsf(scores[use_tail]-threshold,shape,loc=0,scale=scale)
+            finite=np.isfinite(logp) & (logp>=np.log(np.finfo(float).tiny))
+            tail_p=np.full(logp.shape,np.nan)
+            tail_p[finite]=np.exp(logp[finite])
+            fitted[use_tail]=tail_p
+            meta.update(status='ok',threshold=threshold,threshold_quantile=quantile,
+                        n_tail=n_tail,shape=shape,scale=scale,ks_distance=discrepancy,
+                        tail_probability=n_tail/len(maxima),maximum_simulated=float(np.max(maxima)),
+                        finite_upper_endpoint=float(threshold-scale/shape) if shape<0 else None,
+                        windows_in_tail=int(use_tail.sum()),
+                        windows_beyond_simulated_maximum=int((scores>np.max(maxima)).sum()),
+                        windows_fit_unavailable=int(np.isnan(fitted).sum()),
+                        unavailable_policy='NaN for unsupported or underflowing tail estimates; empirical p-value retained',
+                        interpretation='exploratory model estimate; tail screening does not establish p-value calibration')
+            return fitted,meta
+
+        def window_path(pair_dir):
+            return pair_dir/('windows.tsv' if keep_windows else 'windows.tsv.gz')
+
+        def pair_checkpoint(pair_dir):
+            names=[window_path(pair_dir).name,'distributions.npz','transcript_counts.tsv',
+                   'enriched_regions.tsv','selected_regions.tsv','support_transcripts.tsv',
+                   'tail_fit.json','summary.json']
+            info={name:dict(bytes=(pair_dir/name).stat().st_size,
+                           sha256=hashlib.sha256((pair_dir/name).read_bytes()).hexdigest()) for name in names}
+            write_json(pair_dir/'pair_complete.json',dict(outputs=info))
+
+        def completed_pair(pair_dir):
+            try:
+                checkpoint=json.loads((pair_dir/'pair_complete.json').read_text())
+                return bool(checkpoint['outputs']) and all(
+                    (pair_dir/name).is_file() and (pair_dir/name).stat().st_size==info['bytes']
+                    and hashlib.sha256((pair_dir/name).read_bytes()).hexdigest()==info['sha256']
+                    for name,info in checkpoint['outputs'].items())
+            except (OSError,ValueError,KeyError):
+                return False
+
+        def parallel_results(action, items):
+            """Linux fork workers inherit read-only sequence/mapping caches.
+
+            Only pair identifiers and small summaries cross queues. Workers
+            never update global summaries/FDR. Seeds remain pair/batch based.
+            """
+            if jobs == 1:
+                for item in items:
+                    yield item,action(item)
+                return
+            import multiprocessing as multiprocessing_local
+            import queue, traceback
+            context=multiprocessing_local.get_context('fork')
+            count=min(jobs,len(items))
+            tasks=context.Queue(maxsize=max(2,count*2))
+            results=context.Queue(maxsize=max(2,count*2))
+            def worker():
+                while True:
+                    item=tasks.get()
+                    if item is None:
+                        return
+                    try:
+                        answer=action(item)
+                        results.put((True,item,answer))
+                    except BaseException:
+                        results.put((False,item,traceback.format_exc()))
+                        return
+            workers=[context.Process(target=worker) for _ in range(count)]
+            try:
+                for process in workers:
+                    process.start()
+                pending=iter(items)
+                for _ in workers:
+                    tasks.put(next(pending))
+                for _ in range(len(items)):
+                    while True:
+                        try:
+                            success,item,answer=results.get(timeout=1)
+                            break
+                        except queue.Empty:
+                            dead=[p for p in workers if p.exitcode is not None]
+                            if dead:
+                                raise RuntimeError('Cooccurrence worker exited unexpectedly: '+str([(p.pid,p.exitcode) for p in dead]))
+                    if not success:
+                        raise RuntimeError('Cooccurrence worker failed for '+str(item)+'\n'+answer)
+                    yield item,answer
+                    try:
+                        tasks.put(next(pending))
+                    except StopIteration:
+                        pass
+                for _ in workers:
+                    tasks.put(None)
+                for process in workers:
+                    process.join(timeout=10)
+            finally:
+                for process in workers:
+                    if process.is_alive():
+                        process.terminate()
+                for process in workers:
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill();process.join(timeout=5)
+                tasks.cancel_join_thread();results.cancel_join_thread()
+                tasks.close();results.close()
+
+        def find_all(s, word):
+            hits = []
+            p = s.find(word)
+            while p >= 0:
+                hits.append(p)
+                p = s.find(word, p+1)
+            return np.asarray(hits, dtype=np.int64)
+
+        def merge_intervals(windows, mask, a, b, unique_distances):
+            groups = []
+            for j in np.flatnonzero(mask):
+                lo, stop = int(starts[j]), int(starts[j]+window_width)
+                if groups and lo < groups[-1]['stop']:
+                    groups[-1]['stop'] = max(groups[-1]['stop'], stop)
+                    groups[-1]['members'].append(int(j))
+                else:
+                    groups.append(dict(start=lo, stop=stop, members=[int(j)]))
+            merged, membership = [], []
+            for i, group in enumerate(groups, 1):
+                lo, stop = group['start'], group['stop']
+                members = windows.iloc[group['members']]
+                best = members.sort_values(['excess_percentage_points','start_nt'], ascending=[False,True]).iloc[0]
+                support_ids = []
+                for t, ds in unique_distances.items():
+                    j = np.searchsorted(ds, lo)
+                    if j < len(ds) and ds[j] < stop:
+                        support_ids.append(ids[t])
+                probability = float(observed[lo:stop].sum()/observed.sum())
+                exp = float(expected[lo:stop].sum())
+                name = f'R{i:03d}'
+                merged.append(dict(region=name,kmer_a=a,kmer_b=b,start_nt=lo,end_nt=stop-1,width_nt=stop-lo,
+                                   n_windows=len(members),observed_pct=100*probability,expected_pct=100*exp,
+                                   enrichment=probability/exp if exp else np.nan,support_transcripts=len(support_ids),
+                                   support_fraction=len(support_ids)/n_tx,best_window_start_nt=int(best.start_nt),
+                                   best_window_end_nt=int(best.end_nt),best_window_pvalue_scan=float(best.pvalue_scan),
+                                   best_window_pvalue_scan_fitted=float(best.pvalue_scan_fitted)))
+                membership.extend(dict(region=name,kmer_a=a,kmer_b=b,transcript_id=tx) for tx in support_ids)
+            return pd.DataFrame(merged, columns=region_columns), pd.DataFrame(membership, columns=['region','kmer_a','kmer_b','transcript_id'])
+
+        @njit(nogil=True)
+        def draw_batch(flat, offsets, na, nb, n_dist, first, width, stride, expected_mass, B, rng_seed):
+            np.random.seed(rng_seed)
+            max_sites = 0
+            max_draw = 0
+            for t in range(len(na)):
+                max_sites = max(max_sites, offsets[t+1]-offsets[t])
+                max_draw = max(max_draw, na[t]+nb[t])
+            pool = np.arange(max_sites, dtype=np.int64)
+            swaps = np.empty(max_draw, dtype=np.int64)
+            coordinates = np.empty(max_draw, dtype=np.int64)
+            maxima = np.empty(B, dtype=np.float64)
+            totals = np.empty(B, dtype=np.int64)
+            for trial in range(B):
+                hist = np.zeros(n_dist, dtype=np.int64)
+                for t in range(len(na)):
+                    off = offsets[t]
+                    m = offsets[t+1]-off
+                    ns = na[t]+nb[t]
+                    for i in range(ns):
+                        j = np.random.randint(i,m)
+                        swaps[i] = j
+                        temp = pool[i]; pool[i] = pool[j]; pool[j] = temp
+                        coordinates[i] = flat[off+pool[i]]
+                    for i in range(na[t]):
+                        for j in range(na[t],ns):
+                            delta = abs(coordinates[i]-coordinates[j])
+                            if delta >= first:
+                                hist[delta] += 1
+                    for i in range(ns-1,-1,-1):
+                        j = swaps[i]
+                        temp = pool[i]; pool[i] = pool[j]; pool[j] = temp
+                total = hist.sum()
+                if total == 0:
+                    raise ValueError('A random replica has no retained distances; change the model or input instead of silently dropping it.')
+                totals[trial] = total
+                prefix = np.empty(n_dist+1, dtype=np.int64)
+                prefix[0] = 0
+                for i in range(n_dist):
+                    prefix[i+1] = prefix[i]+hist[i]
+                maximum = -1.0
+                for q in range(len(expected_mass)):
+                    start = first+q*stride
+                    score = (prefix[start+width]-prefix[start])/total-expected_mass[q]
+                    maximum = max(maximum, score)
+                maxima[trial] = maximum
+            for i in range(max_sites):
+                if pool[i] != i:
+                    raise ValueError('Sampling pool restoration failed')
+            return maxima, totals
+
+        def make_plots(pair_dir, a, b, windows, candidates, selected_regions, summary):
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Rectangle
+            paths = {}
+            centers = starts+(window_width-1)/2
+            for phase in [1,2,3]:
+                fig = plt.figure(figsize=(10,5.8))
+                grid = fig.add_gridspec(2,1,height_ratios=[8,.7],hspace=.08)
+                ax = fig.add_subplot(grid[0]); band = fig.add_subplot(grid[1],sharex=ax)
+                ax.set_xscale('log'); band.set_xscale('log')
+                if len(windows):
+                    ax.fill_between(centers,0,windows.expected_pct,color='#BDBDBD',alpha=.65,label='Expected: matched TX weights')
+                    ax.plot(centers,windows.expected_pct,color='#888888',lw=.9)
+                    ax.plot(centers,windows.observed_pct,color='#D62728',lw=.9,label='Observed A/B distances')
+                    if phase == 3:
+                        ok = windows.selected.to_numpy(bool)
+                        ax.scatter(centers[ok],windows.loc[ok,'observed_pct'],s=3,color='#1565C0',linewidths=0,label='All filters passed',zorder=4)
+                    regions = candidates if phase == 2 else selected_regions if phase == 3 else pd.DataFrame()
+                    for r in regions.itertuples():
+                        band.add_patch(Rectangle((r.start_nt,.12),r.width_nt,.76,fill=False,edgecolor='#1565C0',lw=1.1,linestyle=(0,(4,3))))
+                    if phase == 3 and selected_regions.empty:
+                        ax.text(.98,.69,'No window passes all three filters',transform=ax.transAxes,ha='right',color='#1565C0',fontsize=10)
+                    ax.set_ylim(bottom=0)
+                else:
+                    ax.text(.5,.5,'No observed distances after filtering\nNo p-value can be computed',transform=ax.transAxes,ha='center',va='center')
+                    ax.set_ylim(0,1)
+                titles = {1:'Phase 1: observed vs exact expected',2:f'Phase 2: enrichment >= {min_enrichment:g}x; overlapping windows merged',3:f'Phase 3: enrichment + scan p-value + TX support; {len(selected_regions)} merged intervals'}
+                ax.set(title=f'{a} / {b} | {summary["analysis"]}\n{titles[phase]}',ylabel=f'Distances in {window_width}-nt window (%)',xlim=(min_distance,maxd))
+                ax.title.set_fontsize(11)
+                ax.tick_params(axis='x',labelbottom=False)
+                ax.spines[['top','right']].set_visible(False)
+                if len(windows): ax.legend(loc='upper right',frameon=False,fontsize=9)
+                band.set(ylim=(0,1),yticks=[],xlabel='Start-start distance (nt, log scale; window centers)')
+                band.set_ylabel('Merge',rotation=0,labelpad=25,fontsize=9)
+                band.spines[['top','right','left']].set_visible(False)
+                fig.subplots_adjust(left=.11,right=.98,top=.84,bottom=.19)
+                foot = f'{window_width}-nt windows, step {step}; distance >= {min_distance} nt. Same resolution for curves and tests.'
+                if phase == 3:
+                    foot += f'\n{n_resamples} replicates; p < {pvalue_threshold:g}; support >= {support_required}/{n_tx} TX.'
+                    if fdr_threshold is None:
+                        foot += ' No FDR.'
+                    else:
+                        q = summary.get('pair_FDR', None)
+                        foot += f' Pair FDR < {fdr_threshold:g}; ' + (f'q={q:.4g}' if q is not None else 'not testable')
+                fig.text(.11,.045,foot,fontsize=8)
+                for ext in ['png','pdf']:
+                    path = pair_dir/f'phase_{phase}.{ext}'
+                    fig.savefig(path,dpi=180)
+                    paths[f'phase_{phase}_{ext}'] = str(path)
+                plt.close(fig)
+            return paths
+
+        observed=expected=None
+        masking_stats = []
+        try:
+            branches = [('unmasked',sequences)]
+            if masking:
+                exe = str(tantan_executable or shutil.which('tantan') or '')
+                if not exe:
+                    local = Path(self.dir_out)/'_runtime/tantan51/bin/tantan'
+                    if local.is_file(): exe = str(local)
+                found = shutil.which(exe) if exe else None
+                if not found:
+                    raise FileNotFoundError('tantan executable not found; pass tantan_executable explicitly')
+                exe = str(Path(found).resolve())
+                options = list(tantan_options or [])
+                if any(not isinstance(x,str) for x in options) or any(x in {'-x','-f','-p'} for x in options):
+                    raise ValueError('tantan_options must be DNA model options only; hard masking/output mode are managed internally')
+                version = subprocess.run([exe,'--version'],capture_output=True,text=True,check=True)
+                settings['tantan'] = dict(executable=exe,version=(version.stdout+version.stderr).strip(),
+                                          executable_sha256=hashlib.sha256(Path(exe).read_bytes()).hexdigest(),options=options,
+                                          command=[exe,'-x','N']+options+[str(source)])
+                with tempfile.TemporaryDirectory(prefix='kea_spacing_tantan_') as tmp:
+                    masked_file = Path(tmp)/'reference.masked.fa'
+                    with masked_file.open('w') as stream:
+                        done = subprocess.run(settings['tantan']['command'],stdout=stream,stderr=subprocess.PIPE,text=True,check=True)
+                    (destination/'tantan.log').write_text(done.stderr)
+                    masked_records = list(SeqIO.parse(str(masked_file),'fasta'))
+                    if [r.id for r in masked_records] != ids:
+                        raise ValueError('tantan changed FASTA IDs/order')
+                    masked_sequences = [str(r.seq).upper().replace('U','T') for r in masked_records]
+                    mask_intervals = []
+                    for tx,s,m in zip(ids,sequences,masked_sequences):
+                        if len(s) != len(m): raise ValueError('tantan changed sequence lengths')
+                        before = np.frombuffer(s.encode(),np.uint8)
+                        after = np.frombuffer(m.encode(),np.uint8)
+                        changed = before != after
+                        if np.any(changed & (after != ord('N'))): raise ValueError('Unexpected tantan base change')
+                        padded = np.r_[False,changed,False].astype(np.int8)
+                        edges = np.diff(padded)
+                        mask_intervals.extend((tx,int(a),int(b)) for a,b in zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1)))
+                        masking_stats.append(dict(transcript_id=tx,length_nt=len(s),masked_nt=int(changed.sum()),masked_fraction=float(changed.mean()) if len(s) else 0.0))
+                    pd.DataFrame(mask_intervals,columns=['transcript_id','start','end']).to_csv(destination/'tantan_masks.bed',sep='\t',header=False,index=False)
+                    pd.DataFrame(masking_stats).to_csv(destination/'masking_stats.tsv',sep='\t',index=False)
+                    settings['tantan']['masked_fasta_sha256'] = hashlib.sha256(masked_file.read_bytes()).hexdigest()
+                branches.append(('masked',masked_sequences))
+                write_json(destination/'settings.json',settings)
+            for label, seqs in branches:
+                branch_dir = destination/label
+                branch_dir.mkdir(exist_ok=True)
+                # A previously finalized branch is verified and reused wholesale;
+                # never rewrite its windows just because worker count changed.
+                cached=None
+                if resume_dir is not None and (destination/'pair_summary.tsv').is_file():
+                    saved_table=pd.read_csv(destination/'pair_summary.tsv',sep='\t',low_memory=False)
+                    candidate=saved_table.loc[saved_table['analysis'].eq(label)]
+                    eligible=len(candidate)==len(selected_pairs) and (branch_dir/'selected_regions.tsv').is_file() and (branch_dir/'support_transcripts.tsv').is_file()
+                    if eligible and fdr_threshold is not None:
+                        eligible='fdr_family_size' in candidate and candidate['fdr_family_size'].eq(len(declared_pair_family)).all()
+                    if eligible:
+                        def verify_saved(pair):
+                            p=branch_dir/f'{pair[0]}__{pair[1]}'
+                            return json.loads((p/'summary.json').read_text()) if completed_pair(p) else None
+                        verified={}
+                        for pair,summary in parallel_results(verify_saved,selected_pairs):
+                            if summary is not None:verified[tuple(pair)]=summary
+                        if len(verified)==len(selected_pairs):
+                            cached=[verified[tuple(pair)] for pair in selected_pairs]
+                if cached is not None:
+                    pair_rows.extend(cached)
+                    saved_windows=[pd.read_csv(window_path(branch_dir/f'{a}__{b}'),sep='\t') for a,b in selected_pairs] if keep_windows else []
+                    branch_results[label]=dict(windows=pd.concat(saved_windows,ignore_index=True) if saved_windows else pd.DataFrame(columns=window_columns),
+                                              windows_in_memory=bool(keep_windows),window_files=[str(window_path(branch_dir/f'{a}__{b}')) for a,b in selected_pairs],
+                                              regions=pd.read_csv(branch_dir/'selected_regions.tsv',sep='\t'),
+                                              support_transcripts=pd.read_csv(branch_dir/'support_transcripts.tsv',sep='\t'),
+                                              plots={f"{r['kmer_a']}|{r['kmer_b']}":r.get('plots',{}) for r in cached},output_dir=str(branch_dir))
+                    if verbose:print(f'[KEA spacing] {label}: reused {len(cached)} verified pairs and completed FDR',flush=True)
+                    continue
+                occurrences = {word:[find_all(s,word) for s in seqs] for word in words}
+                valid_sites = []
+                for s in seqs:
+                    if len(s)<k:
+                        valid_sites.append(np.empty(0,dtype=np.int32));continue
+                    invalid = ~np.isin(np.frombuffer(s.encode(),np.uint8),np.frombuffer(b'ACGT',np.uint8))
+                    cs = np.r_[0,np.cumsum(invalid,dtype=np.int64)]
+                    valid_sites.append(np.flatnonzero((cs[k:]-cs[:-k])==0).astype(np.int32))
+                geometry_cache = {}
+                branch_windows = []; branch_regions = []; branch_support = []; plots = {}
+                pair_indices={tuple(pair):j for j,pair in enumerate(selected_pairs)}
+                def compute_pair(pair):
+                    nonlocal observed,expected
+                    a,b=pair
+                    pair_number=pair_indices[tuple(pair)]+1
+                    if verbose: print(f'[KEA spacing] {label} {pair_number}/{len(selected_pairs)}: {a}/{b}',flush=True)
+                    pair_dir=branch_dir/f'{a}__{b}'
+                    pair_dir.mkdir(exist_ok=True)
+                    if resume_dir is not None and completed_pair(pair_dir):
+                        return json.loads((pair_dir/'summary.json').read_text())
+                    pair_started = time.time()
+                    raw_pairs = sum(len(x)*len(y) for x,y in zip(occurrences[a],occurrences[b]))
+                    observed = np.zeros(maxd+1,dtype=np.int64)
+                    unique_distances = {}
+                    support = np.zeros(len(starts),dtype=np.int64)
+                    expected = np.zeros(maxd+1)
+                    active = []; flat = []; offsets = [0]; na = []; nb = []
+                    tx_rows = []
+                    for t,(aa,bb) in enumerate(zip(occurrences[a],occurrences[b])):
+                        tx_rows.append(dict(transcript_id=ids[t],length_nt=len(seqs[t]),n_a=len(aa),n_b=len(bb),raw_pairs=len(aa)*len(bb),valid_random_starts=len(valid_sites[t])))
+                        if not len(aa) or not len(bb): continue
+                        hist = np.zeros(maxd+1,dtype=np.int64)
+                        for pos in range(0,len(aa),max(1,1000000//len(bb))):
+                            ds = np.abs(aa[pos:pos+max(1,1000000//len(bb)),None]-bb[None,:]).ravel()
+                            hist += np.bincount(ds,minlength=maxd+1)
+                        if int(hist.sum()) != len(aa)*len(bb): raise RuntimeError('Observed Cartesian pair count mismatch')
+                        hist[:min_distance] = 0
+                        observed += hist
+                        unique_distances[t] = np.flatnonzero(hist)
+                        cumulative = np.r_[0,np.cumsum(hist)]
+                        support += (cumulative[starts+window_width]-cumulative[starts])>0
+                        sites = valid_sites[t]
+                        if len(sites)<len(aa)+len(bb): raise RuntimeError('Not enough distinct valid random coordinates')
+                        if t not in geometry_cache:
+                            n = len(seqs[t])-k+1
+                            marks = np.zeros(n)
+                            marks[sites] = 1
+                            corr = np.rint(correlate(marks,marks,mode='full',method='fft')).astype(np.int64)
+                            geom = corr[n:]
+                            total = len(sites)*(len(sites)-1)//2
+                            if np.any(geom<0) or int(geom.sum())!=total: raise RuntimeError('Coordinate-pair geometry mismatch')
+                            geometry_cache[t] = (geom.astype(np.int32),total)
+                        geom,total = geometry_cache[t]
+                        expected[1:len(geom)+1] += (len(aa)*len(bb)/raw_pairs)*(geom/total)
+                        active.append(t);flat.append(sites);offsets.append(offsets[-1]+len(sites));na.append(len(aa));nb.append(len(bb))
+                    pd.DataFrame(tx_rows).to_csv(pair_dir/'transcript_counts.tsv',sep='\t',index=False)
+                    status = 'complete' if observed.sum() else 'no_observed_distances'
+                    summary = dict(analysis=label,kmer_a=a,kmer_b=b,status=status,n_transcripts=n_tx,
+                                   n_transcripts_with_both=len(active),raw_observed_pairs=int(raw_pairs),
+                                   retained_observed_distances=int(observed.sum()),required_support_transcripts=support_required)
+                    windows = pd.DataFrame(columns=window_columns)
+                    candidates = pd.DataFrame(columns=region_columns)
+                    merged = pd.DataFrame(columns=region_columns)
+                    membership = pd.DataFrame(columns=['region','kmer_a','kmer_b','transcript_id'])
+                    maxima = np.empty(0); background = np.zeros(maxd+1,dtype=np.int64)
+                    expected_mass = np.zeros(len(starts)); retained = np.empty(0,dtype=np.int64)
+                    fitted_pvalue=np.full(len(starts),np.nan)
+                    tail_fit=dict(status='no_observed_distances')
+                    if observed.sum():
+                        expected[:min_distance] = 0
+                        if expected.sum() <= 0: raise RuntimeError('No valid random distances after filtering')
+                        expected /= expected.sum()
+                        pair_seed = int.from_bytes(hashlib.sha256(f'{seed}|{label}|{a}|{b}'.encode()).digest()[:4],'little')
+                        rng = np.random.default_rng(pair_seed)
+                        background = rng.multinomial(n_background,expected)
+                        if int(background.sum()) != n_background: raise RuntimeError('Background sample total mismatch')
+                        ce = np.r_[0,np.cumsum(expected)]
+                        co = np.r_[0,np.cumsum(observed)]
+                        expected_mass = ce[starts+window_width]-ce[starts]
+                        observed_count = co[starts+window_width]-co[starts]
+                        observed_mass = observed_count/observed.sum()
+                        excess = observed_mass-expected_mass
+                        maxima_parts=[];retained_parts=[]
+                        flat_array=np.concatenate(flat)
+                        offset_array=np.asarray(offsets,np.int64)
+                        na_array=np.asarray(na,np.int64);nb_array=np.asarray(nb,np.int64)
+                        def simulate_batch(first):
+                            return draw_batch(flat_array,offset_array,na_array,nb_array,maxd+1,min_distance,
+                                              window_width,step,expected_mass,min(100,n_resamples-first),
+                                              (pair_seed+first+1)%(2**32))
+                        batch_starts=list(range(0,n_resamples,100))
+                        with ThreadPoolExecutor(max_workers=threads) as executor:
+                            for first,(mx,totals) in zip(batch_starts,executor.map(simulate_batch,batch_starts)):
+                                maxima_parts.append(mx);retained_parts.append(totals)
+                                if verbose: print(f'  Monte Carlo {min(first+100,n_resamples)}/{n_resamples}',flush=True)
+                        maxima=np.concatenate(maxima_parts);retained=np.concatenate(retained_parts)
+                        pvalue=(1+n_resamples-np.searchsorted(np.sort(maxima),excess-1e-14,side='left'))/(n_resamples+1)
+                        fitted_pvalue,tail_fit=fit_maximum_tail(maxima,excess)
+                        enrichment=np.divide(observed_mass,expected_mass,out=np.full_like(observed_mass,np.nan),where=expected_mass>0)
+                        pass_enrichment=(enrichment>=min_enrichment)&(excess>0)
+                        pass_p=pvalue<pvalue_threshold
+                        pass_support=support>=support_required
+                        selected=pass_enrichment&pass_p&pass_support
+                        windows=pd.DataFrame(dict(kmer_a=a,kmer_b=b,start_nt=starts,end_nt=starts+window_width-1,
+                                                  observed_count=observed_count,observed_pct=100*observed_mass,expected_pct=100*expected_mass,
+                                                  excess_percentage_points=100*excess,enrichment=enrichment,
+                                                  support_transcripts=support,support_fraction=support/n_tx,pvalue_scan=pvalue,pvalue_scan_fitted=fitted_pvalue,
+                                                  passes_enrichment=pass_enrichment,passes_pvalue=pass_p,passes_support=pass_support,selected=selected),columns=window_columns)
+                        candidates,_=merge_intervals(windows,pass_enrichment,a,b,unique_distances)
+                        merged,membership=merge_intervals(windows,selected,a,b,unique_distances)
+                        summary.update(windows_tested=len(starts),windows_enrichment=int(pass_enrichment.sum()),windows_pvalue=int(pass_p.sum()),
+                                       windows_support=int(pass_support.sum()),windows_selected=int(selected.sum()),merged_intervals=len(merged),
+                                       max_window_support_transcripts=int(support.max()),max_window_support_fraction=float(support.max()/n_tx),
+                                       minimum_scan_pvalue=float(pvalue.min()),pair_scan_pvalue=float((1+(maxima>=excess.max()-1e-14).sum())/(n_resamples+1)),
+                                       pair_scan_pvalue_fitted=float(fitted_pvalue[np.argmax(excess)]) if np.isfinite(fitted_pvalue[np.argmax(excess)]) else None)
+                    else:
+                        summary.update(windows_tested=0,windows_enrichment=0,windows_pvalue=0,windows_support=0,windows_selected=0,
+                                       merged_intervals=0,max_window_support_transcripts=0,max_window_support_fraction=0.,minimum_scan_pvalue=None,pair_scan_pvalue=None,pair_scan_pvalue_fitted=None)
+                    summary.update(tail_fit_status=tail_fit['status'],tail_fit_threshold=tail_fit.get('threshold'),
+                                   tail_fit_shape=tail_fit.get('shape'),tail_fit_scale=tail_fit.get('scale'),
+                                   tail_fit_n=tail_fit.get('n_tail'),tail_fit_ks_distance=tail_fit.get('ks_distance'))
+                    write_json(pair_dir/'tail_fit.json',tail_fit)
+                    windows.to_csv(window_path(pair_dir),sep='\t',index=False)
+                    candidates.to_csv(pair_dir/'enriched_regions.tsv',sep='\t',index=False)
+                    merged.to_csv(pair_dir/'selected_regions.tsv',sep='\t',index=False)
+                    membership.to_csv(pair_dir/'support_transcripts.tsv',sep='\t',index=False)
+                    archive=dict(observed_count=observed,expected_probability=expected,
+                                 null_max_excess=maxima,null_retained_distances=retained)
+                    if keep_windows:
+                        archive.update(distance_nt=distance,background_count=background,
+                                       window_starts=starts,expected_window_mass=expected_mass)
+                    np.savez_compressed(pair_dir/'distributions.npz',**archive)
+                    summary['elapsed_seconds']=round(time.time()-pair_started,3)
+                    pair_plots=make_plots(pair_dir,a,b,windows,candidates,merged,summary) if plot and fdr_threshold is None else {}
+                    summary['plots']=pair_plots;plots[f'{a}|{b}']=pair_plots
+                    write_json(pair_dir/'summary.json',summary)
+                    pair_checkpoint(pair_dir)
+                    return summary
+                summaries={}
+                for pair,summary in parallel_results(compute_pair,selected_pairs):
+                    summaries[tuple(pair)]=summary
+                    write_json(destination/'progress.json',dict(state='running',phase='simulations',branch=label,
+                               branch_completed=len(summaries),branch_total=len(selected_pairs),jobs=jobs,threads=threads,
+                               completed_pair_branches=len(pair_rows)+len(summaries),total_pair_branches=len(selected_pairs)*(2 if masking else 1),
+                               last_pair=list(pair),updated_unix=time.time()))
+                    if len(summaries)%10==0 or len(summaries)==len(selected_pairs):
+                        pd.DataFrame([{key:value for key,value in r.items() if key!='plots'} for r in pair_rows+list(summaries.values())]).to_csv(destination/'pair_summary.tsv',sep='\t',index=False)
+                canonical=[summaries[tuple(pair)] for pair in selected_pairs]
+                pair_rows.extend(canonical)
+                branch_windows=[pd.read_csv(window_path(branch_dir/f'{a}__{b}'),sep='\t') for a,b in selected_pairs] if keep_windows else [None]*len(selected_pairs)
+                branch_regions=[pd.read_csv(branch_dir/f'{a}__{b}'/'selected_regions.tsv',sep='\t') for a,b in selected_pairs]
+                branch_support=[pd.read_csv(branch_dir/f'{a}__{b}'/'support_transcripts.tsv',sep='\t') for a,b in selected_pairs]
+                if fdr_threshold is not None:
+                    from statsmodels.stats.multitest import multipletests
+                    rows_this_branch = [r for r in pair_rows if r['analysis'] == label]
+                    if len(rows_this_branch) != len(declared_pair_family):
+                        raise RuntimeError('Incomplete pair family: FDR cannot be finalized')
+                    valid = np.array([r['pair_scan_pvalue'] is not None for r in rows_this_branch],dtype=bool)
+                    probabilities = np.array([r['pair_scan_pvalue'] if good else 1.0 for r,good in zip(rows_this_branch,valid)],dtype=float)
+                    adjusted = multipletests(probabilities,method=fdr_method)[1]
+                    fitted_family=np.array([r.get('pair_scan_pvalue_fitted') if r.get('pair_scan_pvalue_fitted') is not None else p for r,p in zip(rows_this_branch,probabilities)],dtype=float)
+                    adjusted_fitted=multipletests(fitted_family,method=fdr_method)[1]
+                    write_json(destination/'progress.json',dict(state='running',phase='finalizing_fdr',branch=label,
+                               completed_pair_branches=len(pair_rows),total_pair_branches=len(selected_pairs)*(2 if masking else 1),updated_unix=time.time()))
+                    def finalize_pair(item):
+                        j,summary,good,q=item
+                        a,b=summary['kmer_a'],summary['kmer_b']
+                        pair_dir=branch_dir/f'{a}__{b}'
+                        qvalue=float(q) if good else None
+                        pass_fdr=bool(good and q < fdr_threshold)
+                        summary.update(pair_FDR=qvalue,passes_pair_fdr=pass_fdr,fdr_method=fdr_method,fdr_family_size=len(rows_this_branch),
+                                       pair_FDR_fitted=float(adjusted_fitted[j]) if good else None,
+                                       fitted_fdr_used_empirical_fallback=bool(good and summary.get('pair_scan_pvalue_fitted') is None))
+                        windows=pd.read_csv(window_path(pair_dir),sep='\t')
+                        windows['pair_FDR']=np.nan if qvalue is None else qvalue
+                        windows['pair_FDR_fitted']=summary['pair_FDR_fitted'] if good else np.nan
+                        windows['passes_pair_fdr']=pass_fdr
+                        windows['selected_pre_fdr']=windows['selected'].astype(bool)
+                        windows['selected']=windows['selected_pre_fdr'] & pass_fdr
+                        merged=pd.read_csv(pair_dir/'selected_regions.tsv',sep='\t')
+                        membership=pd.read_csv(pair_dir/'support_transcripts.tsv',sep='\t')
+                        if not pass_fdr:
+                            merged=merged.iloc[:0].copy()
+                            membership=membership.iloc[:0].copy()
+                        merged['pair_FDR']=np.nan if qvalue is None else qvalue
+                        merged['pair_FDR_fitted']=summary['pair_FDR_fitted'] if good else np.nan
+                        summary.update(windows_selected=int(windows.selected.sum()),merged_intervals=len(merged))
+                        candidates=pd.read_csv(pair_dir/'enriched_regions.tsv',sep='\t')
+                        pair_plots=make_plots(pair_dir,a,b,windows,candidates,merged,summary) if plot else {}
+                        summary['plots']=pair_plots
+                        plots[f'{a}|{b}']=pair_plots
+                        windows.to_csv(window_path(pair_dir),sep='\t',index=False)
+                        merged.to_csv(pair_dir/'selected_regions.tsv',sep='\t',index=False)
+                        membership.to_csv(pair_dir/'support_transcripts.tsv',sep='\t',index=False)
+                        write_json(pair_dir/'summary.json',summary)
+                        pair_checkpoint(pair_dir)
+                        return summary
+                    items=[(j,summary,bool(good),float(q)) for j,(summary,good,q) in enumerate(zip(rows_this_branch,valid,adjusted))]
+                    for item,updated in parallel_results(finalize_pair,items):
+                        j=item[0]
+                        if updated is not rows_this_branch[j]:
+                            rows_this_branch[j].clear();rows_this_branch[j].update(updated)
+                    branch_windows=[pd.read_csv(window_path(branch_dir/f'{a}__{b}'),sep='\t') for a,b in selected_pairs] if keep_windows else [None]*len(selected_pairs)
+                    branch_regions=[pd.read_csv(branch_dir/f'{a}__{b}'/'selected_regions.tsv',sep='\t') for a,b in selected_pairs]
+                    branch_support=[pd.read_csv(branch_dir/f'{a}__{b}'/'support_transcripts.tsv',sep='\t') for a,b in selected_pairs]
+                plots={f"{r['kmer_a']}|{r['kmer_b']}":r.get('plots',{}) for r in pair_rows if r['analysis']==label}
+                nonempty_windows=[frame for frame in branch_windows if frame is not None and not frame.empty]
+                nonempty_regions=[frame for frame in branch_regions if not frame.empty]
+                nonempty_support=[frame for frame in branch_support if not frame.empty]
+                all_windows=pd.concat(nonempty_windows,ignore_index=True) if nonempty_windows else pd.DataFrame(columns=window_columns)
+                all_regions=pd.concat(nonempty_regions,ignore_index=True) if nonempty_regions else branch_regions[0].copy()
+                all_support=pd.concat(nonempty_support,ignore_index=True) if nonempty_support else branch_support[0].copy()
+                all_regions.to_csv(branch_dir/'selected_regions.tsv',sep='\t',index=False)
+                all_support.to_csv(branch_dir/'support_transcripts.tsv',sep='\t',index=False)
+                branch_results[label]=dict(windows=all_windows,windows_in_memory=bool(keep_windows),
+                                           window_files=[str(window_path(branch_dir/f'{a}__{b}')) for a,b in selected_pairs],
+                                           regions=all_regions,support_transcripts=all_support,plots=plots,output_dir=str(branch_dir))
+                pd.DataFrame([{key:value for key,value in r.items() if key!='plots'} for r in pair_rows]).to_csv(destination/'pair_summary.tsv',sep='\t',index=False)
+            if hashlib.sha256(source.read_bytes()).hexdigest()!=source_sha:
+                raise RuntimeError('Original reference FASTA changed during analysis')
+            settings.update(state='complete',elapsed_seconds=round(time.time()-started,3),input_verified_unchanged=True, fdr_computed=fdr_threshold is not None)
+            write_json(destination/'settings.json',settings)
+            pair_summary=pd.DataFrame([{key:value for key,value in r.items() if key!='plots'} for r in pair_rows])
+            result=dict(pair_summary=pair_summary,branches=branch_results,settings=settings,output_dir=str(destination))
+            self.cooccurrence_results=result
+            return result
+        except BaseException as error:
+            settings.update(state='interrupted' if isinstance(error,KeyboardInterrupt) else 'failed',error=f'{type(error).__name__}: {error}')
+            write_json(destination/'settings.json',settings)
+            raise
 
 
 
-
-    # def ContaminationAnalysis(
-    #     self,
-    #     bed_cds_genomic: pd.DataFrame,
-    #     uniprot_bed_dir: str,
-    #     uniprot_types: list,
-    #     analysis_name: str = "UniProtZipcodes"):
-        
-    #     """
-    #     Contamination analysis: enrichment of each k-mer in UniProt protein regions.
-    #     Clean version: 
-    #     - NO shuffle
-    #     - NO synaptic
-    #     - NO transcript logic
-    #     - NO mapping (bed_cds_genomic is already genomic)
-    #     - Uses str.contains to match kmers inside the 'name' column
-    #     """
-    #     out_dir = self.dir_out + '/contamination_analysis/'
-    #     os.makedirs(out_dir, exist_ok=True)
-    #     # -----------------------------
-    #     # 1. Load UniProt regions
-    #     # -----------------------------
-    #     def load_uniprot_track(track_type):
-    #         tm = pd.read_table(f"{uniprot_bed_dir}/unipLocTransMemb.bed", header=None).iloc[:, :6]
-    #         tm.columns = ["chrom","start","end","name","score","strand"]
-    
-    #         em = pd.read_table(f"{uniprot_bed_dir}/unipLocExtra.bed", header=None).iloc[:, :6]
-    #         em.columns = ["chrom","start","end","name","score","strand"]
-    
-    #         sig = pd.read_table(f"{uniprot_bed_dir}/unipLocSignal.bed", header=None).iloc[:, :6]
-    #         sig.columns = ["chrom","start","end","name","score","strand"]
-    #         sig = sig[sig["name"] == "Signal peptide"]
-    
-    #         cyto = pd.read_table(f"{uniprot_bed_dir}/unipLocCytopl.bed", header=None).iloc[:, :6]
-    #         cyto.columns = ["chrom","start","end","name","score","strand"]
-    
-    #         struct = pd.read_table(f"{uniprot_bed_dir}/unipStruct.bed", header=None).iloc[:, :6]
-    #         struct.columns = ["chrom","start","end","name","score","strand"]
-    
-    #         dom = pd.read_table(f"{uniprot_bed_dir}/unipDomain.bed", header=None)
-    #         dom = dom.iloc[:, [0,1,2,26,4,5]]
-    #         dom.columns = ["chrom","start","end","name","score","strand"]
-    
-    #         inter = pd.read_table(f"{uniprot_bed_dir}/unipInterest.bed", header=None)
-    #         inter = inter.iloc[:, [0,1,2,26,4,5]]
-    #         inter.columns = ["chrom","start","end","name","score","strand"]
-    
-    #         if track_type == "TransExtracellSignalCyto":
-    #             return pd.concat([tm, em, sig, cyto], ignore_index=True)
-    
-    #         if track_type == "DomainsDisordered":
-    #             return pd.concat([dom, inter[inter["name"] == "Disordered"]], ignore_index=True)
-    
-    #         if track_type == "Struct":
-    #             return struct.copy()
-    
-    #         raise ValueError(f"Unknown UniProt type: {track_type}")
-    
-    #     # merge all requested UniProt tracks
-    #     all_re = pd.concat([load_uniprot_track(t) for t in uniprot_types], ignore_index=True)
-    
-    #     # -----------------------------
-    #     # 2. Extract unique kmers
-    #     # -----------------------------
-    #     zipcodes = sorted(list(set(bed_cds_genomic["name"])))
-    
-    #     # -----------------------------
-    #     # 3. For each kmer: intersect vs UniProt
-    #     # -----------------------------
-    #     results = []
-    
-    #     for kmer_family in zipcodes:
-    
-    #         # select occurrences of this kmer
-    #         study_kmer = bed_cds_genomic[ bed_cds_genomic["name"].str.contains(kmer_family) ]
-    
-    #         # select all other kmers
-    #         others = bed_cds_genomic[ ~bed_cds_genomic["name"].str.contains(kmer_family) ]
-    
-    #         # intersect
-    #         inter_kmer = IntersectBedDf(study_kmer, all_re, "-s -wao")
-    #         inter_others = IntersectBedDf(others, all_re, "-s -wao")
-    
-    #         # region name is column 9 (0-based)
-    #         region_col = inter_kmer.columns[9]
-    
-    #         # count occurrences
-    #         A_counts = inter_kmer.groupby(region_col)[inter_kmer.columns[3]].nunique()
-    #         C_counts = inter_others.groupby(region_col)[inter_others.columns[3]].nunique()
-    
-    #         # total occurrences
-    #         tot_kmer = len(study_kmer)
-    #         tot_others = len(others)
-    
-    #         # build Fisher table per region
-    #         for region in A_counts.index:
-    
-    #             if region == ".":
-    #                 continue
-    
-    #             A = A_counts.get(region, 0)
-    #             B = tot_kmer - A
-    
-    #             C = C_counts.get(region, 0)
-    #             D = tot_others - C
-    
-    #             df_tmp = pd.DataFrame({
-    #                 "A":[A], "B":[B], "C":[C], "D":[D]
-    #             })
-    
-    #             stat = FisherExactTest_MultiTest(
-    #                 df_tmp,
-    #                 "KMER", "A","B",
-    #                 "OTHERS","C","D"
-    #             )
-    
-    #             stat["zipcode_family"] = kmer_family
-    #             stat["region"] = region
-    
-    #             results.append(stat)
-    
-    #     # -----------------------------
-    #     # 4. Combine results
-    #     # -----------------------------
-    #     stat_final = pd.concat(results, ignore_index=True)
-    
-    #     # log2_or_sign
-    #     stat_final["log2_or_sign"] = 0
-    #     stat_final.loc[stat_final["fdr"] < 0.05, "log2_or_sign"] = stat_final["log2_or"]
-    
-    #     # -----------------------------
-    #     # 5. Pivot matrix
-    #     # -----------------------------
-    #     pivot = stat_final.pivot_table(
-    #         index="zipcode_family",
-    #         columns="region",
-    #         values="log2_or_sign",
-    #         dropna=True
-    #     ).fillna(0)
-    
-    #     # save
-    #     pivot.to_csv(f"{out_dir}/score_matrix.{analysis_name}.txt", sep="\t")
-    
-    #     return pivot, stat_final

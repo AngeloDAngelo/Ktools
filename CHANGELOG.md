@@ -2,6 +2,9 @@
 
 ## Current development version
 
+- Synced the installed November 3 KEA analysis and plotting code, retaining portable resources, cached k-mer counting, and published K-CDS safeguards.
+- Added experimental `KEA.cooccurrence` spacing analysis with paired tantan masking, empirical and exploratory fitted-tail statistics, optional pair-level BH/BY FDR, parallel jobs and resumable outputs. Install the `cooccurrence` extra for Numba.
+
 - Integrated autonomous K-CDS domain/positional panels with per-k-mer cache reuse, automatic missing-profile calculation, Ward.D2 on capped centered profiles and In Frame Index ordering. Removed legacy Matplotlib plots. Default background is now shuffle and default tracks are the four localization tracks.
 - Added `kmer_protein_scores` to K-RBP by default, preserving original signature words and averaging their overlapping pentamer scores without changing enrichment results.
 - Updated parameter/API guides, installation requirements and Wiki source pages.

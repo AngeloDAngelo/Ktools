@@ -125,3 +125,9 @@ Please cite **K-tools** using [this repository](https://github.com/AngeloDAngelo
 Copyright © 2026 Angelo D'Angelo. Original K-tools code, documentation and figures are licensed under [CC BY-NC 4.0](LICENSE): noncommercial reuse and modification are permitted under its attribution and other conditions. Third-party datasets and dependencies retain their own terms; see [NOTICE](NOTICE).
 
 K-RBP also creates `analysis.kmer_protein_scores` by default: original 7-mer rows × supplied protein/profile columns, containing the mean of three overlapping pentamer PEKA scores. Enrichment return values are unchanged. See [definitions and missing-score handling](docs/Module-parameters.md#original-k-mer-peka-score-table).
+
+## Experimental motif spacing
+
+The latest local `KEA.cooccurrence` implementation is available as work in progress. Install its additional dependency with `pip install '.[cooccurrence]'`. Paired masking also requires the `tantan` executable on PATH (or `tantan_executable`).
+
+The method scans nonoverlapping forward-strand motif spacings, calibrates windows using Monte Carlo maxima, and optionally applies pair-level BH/BY correction across the complete motif-pair family. `fdr_threshold=None` disables pair correction. Fitted generalized Pareto tail statistics are exploratory; empirical p-values and FDR control selection. `jobs` controls parallel pair processes (POSIX fork required for jobs > 1); `threads` controls simulation threads per process. Use `resume_dir` to resume compatible outputs and `keep_windows=False` to avoid pooling window tables in memory. See the method docstring for the complete API and assumptions.
