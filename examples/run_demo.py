@@ -1,4 +1,4 @@
-"""Offline KEA, KRS and K-RBP tutorial using only synthetic inputs."""
+"""KEA and K-RBP demonstration with synthetic inputs."""
 import argparse
 import json
 from pathlib import Path
@@ -37,10 +37,6 @@ def main():
     assert "ACG" in signature, "The injected motif should be recovered"
     (out / "kea_signature.txt").write_text("".join(k + "\n" for k in signature))
 
-    # KRS is independent of KEA: characterize one fictional transcript.
-    krs = analysis.KRS(reference="reference_006", top_pct=10)
-    (out / "krs_signature.txt").write_text("".join(k + "\n" for k in krs))
-
     # Fictional 3-mer scores. The query-favoring profile is intentionally
     # constructed to demonstrate the API, not discover a biological RBP.
     kmers = sorted(analysis.kmers_count_table_by_species["input"].index)
@@ -62,7 +58,7 @@ def main():
     summary = {"data": "synthetic demonstration only", "seed_sequences": 42,
                "seed_kea": 42, "seed_matrix": 123, "k": 3,
                "reference_transcripts": 24, "control_transcripts": 48,
-               "kea_signature": signature, "krs_size": len(krs),
+               "kea_signature": signature,
                "rbp_profiles_tested": len(rbp)}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

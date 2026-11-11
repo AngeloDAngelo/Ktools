@@ -5,28 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ktools-rna"
 version = "0.1.0.dev0"
-description = "K-mer analysis of RNA populations, individual transcripts, and RBP associations"
+description = "KEA and K-RBP for RNA k-mer analysis"
 readme = "README.md"
 license = "CC-BY-NC-4.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24,<3", "pandas>=2.2,<3", "scipy>=1.11,<2",
-  "scikit-learn>=1.3,<2", "statsmodels>=0.14,<1", "biopython>=1.81,<2",
-  "matplotlib>=3.7,<4", "seaborn>=0.13,<1", "logomaker>=0.8,<1",
-  "pybiomart>=0.2,<1", "wordcloud>=1.9,<2", "matplotlib-venn>=0.11,<2"
+  "statsmodels>=0.14,<1", "biopython>=1.81,<2",
+  "matplotlib>=3.7,<4", "logomaker>=0.8,<1",
+  "wordcloud>=1.9,<2", "matplotlib-venn>=0.11,<2"
 ]
 
 [project.optional-dependencies]
-cooccurrence = ["numba>=0.60,<1"]
 dev = ["pytest>=8,<10", "build>=1,<2"]
 
 [tool.setuptools]
 py-modules = ["KEA"]
-packages = ["ktools_resources"]
-
-[tool.setuptools.package-data]
-ktools_resources = ["miR_Family_Info.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
