@@ -1,0 +1,20 @@
+{
+  "title": "Ktools: KEA and K-RBP for RNA k-mer analysis",
+  "upload_type": "software",
+  "description": "Ktools provides KEA and K-RBP for RNA k-mer analysis. This release archives the public source code and supporting files for citation and reproducibility.",
+  "creators": [
+    {
+      "name": "D'Angelo, Angelo"
+    },
+    {
+      "name": "Setti, Adriano"
+    }
+  ],
+  "license": "cc-by-nc-4.0",
+  "keywords": [
+    "RNA",
+    "k-mer analysis",
+    "KEA",
+    "K-RBP"
+  ]
+}
